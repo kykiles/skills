@@ -1,5 +1,5 @@
 diff -ruN -x .git orig/batch.go ws/batch.go
---- orig/batch.go	2026-10-01 12:34:32.791852766 +0000
+--- orig/batch.go	2026-10-01 12:35:57.081398389 +0000
 +++ ws/batch.go	2026-10-01 12:32:37.558502901 +0000
 @@ -1,7 +1,10 @@
  // Package batch выполняет обработку элементов параллельно.
@@ -152,7 +152,7 @@ diff -ruN -x .git orig/batch.go ws/batch.go
  	return results, nil
  }
 diff -ruN -x .git orig/batch_test.go ws/batch_test.go
---- orig/batch_test.go	2026-10-01 12:34:32.791896595 +0000
+--- orig/batch_test.go	2026-10-01 12:35:57.081418469 +0000
 +++ ws/batch_test.go	2026-10-01 12:33:29.682506000 +0000
 @@ -2,7 +2,11 @@
  
