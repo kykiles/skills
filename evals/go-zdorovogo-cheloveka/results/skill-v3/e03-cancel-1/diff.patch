@@ -1,0 +1,236 @@
+diff -ruN -x .git orig/batch.go ws/batch.go
+--- orig/batch.go	2026-10-01 12:34:35.233060655 +0000
++++ ws/batch.go	2026-10-01 12:33:36.094506381 +0000
+@@ -1,7 +1,10 @@
+ // Package batch выполняет обработку элементов параллельно.
+ package batch
+ 
+-import "context"
++import (
++	"context"
++	"sync"
++)
+ 
+ // Result — результат обработки одного элемента.
+ type Result struct {
+@@ -26,11 +29,22 @@
+ 		err   error
+ 	}
+ 
++	// Создаём собственный контекст для остановки горутин при ошибке
++	ctx, cancel := context.WithCancel(ctx)
++	defer cancel()
++
++	var wg sync.WaitGroup
++
+ 	jobs := make(chan job)
+-	outcomes := make(chan outcome)
++	// Буферированный канал результатов, чтобы горутины могли отправить результат
++	// даже если никто не читает из него
++	outcomes := make(chan outcome, workers)
+ 
++	// Запуск worker горутин
+ 	for w := 0; w < workers; w++ {
++		wg.Add(1)
+ 		go func() {
++			defer wg.Done()
+ 			for j := range jobs {
+ 				v, err := fn(ctx, j.item)
+ 				outcomes <- outcome{j.index, v, err}
+@@ -38,24 +52,41 @@
+ 		}()
+ 	}
+ 
++	// Горутина для отправки jobs
++	wg.Add(1)
+ 	go func() {
++		defer wg.Done()
++		defer close(jobs)
+ 		for i, item := range items {
+-			jobs <- job{i, item}
++			select {
++			case jobs <- job{i, item}:
++			case <-ctx.Done():
++				return
++			}
+ 		}
+-		close(jobs)
+ 	}()
+ 
+ 	results := make([]Result, len(items))
++	var firstErr error
+ 	for range items {
+ 		select {
+ 		case o := <-outcomes:
+-			if o.err != nil {
+-				return nil, o.err
++			if o.err != nil && firstErr == nil {
++				firstErr = o.err
++				cancel() // остановить горутины при первой ошибке
++			}
++			if firstErr == nil {
++				results[o.index] = Result{Item: items[o.index], Value: o.value}
+ 			}
+-			results[o.index] = Result{Item: items[o.index], Value: o.value}
+ 		case <-ctx.Done():
+-			return nil, ctx.Err()
++			if firstErr == nil {
++				firstErr = ctx.Err()
++			}
+ 		}
+ 	}
++	wg.Wait() // дождаться завершения всех горутин
++	if firstErr != nil {
++		return nil, firstErr
++	}
+ 	return results, nil
+ }
+diff -ruN -x .git orig/batch_test.go ws/batch_test.go
+--- orig/batch_test.go	2026-10-01 12:34:35.233075971 +0000
++++ ws/batch_test.go	2026-10-01 12:33:51.078507272 +0000
+@@ -2,7 +2,11 @@
+ 
+ import (
+ 	"context"
++	"errors"
++	"fmt"
++	"runtime"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestProcessAll(t *testing.T) {
+@@ -19,3 +23,133 @@
+ 		}
+ 	}
+ }
++
++// TestProcessAllErrorStopsNewItems проверяет, что при ошибке ProcessAll
++// прекращает выдавать новые элементы и возвращает управление.
++func TestProcessAllErrorStopsNewItems(t *testing.T) {
++	items := []string{"a", "b", "c", "d", "e"}
++	callCount := 0
++	got, err := ProcessAll(context.Background(), items, 1, func(_ context.Context, s string) (int, error) {
++		callCount++
++		// Возвращаем ошибку на третьем элементе
++		if callCount == 3 {
++			return 0, errors.New("test error")
++		}
++		return len(s), nil
++	})
++
++	if err == nil || err.Error() != "test error" {
++		t.Fatalf("expected error 'test error', got %v", err)
++	}
++
++	if got != nil {
++		t.Fatalf("expected nil result, got %v", got)
++	}
++
++	// callCount должен быть <= 5 (может быть запущен еще элемент до отмены)
++	if callCount > 5 {
++		t.Fatalf("too many calls to fn: %d (should be <= 5)", callCount)
++	}
++}
++
++// TestProcessAllGoroutineCleanup проверяет, что горутины завершаются
++// после ошибки (не растут).
++func TestProcessAllGoroutineCleanup(t *testing.T) {
++	// Количество горутин перед тестом
++	initialGoroutines := runtime.NumGoroutine()
++
++	items := []string{"a", "b", "c"}
++	_, err := ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		if s == "b" {
++			return 0, errors.New("test error")
++		}
++		return len(s), nil
++	})
++
++	if err == nil || err.Error() != "test error" {
++		t.Fatalf("expected error, got %v", err)
++	}
++
++	// Даём время горутинам завершиться
++	time.Sleep(100 * time.Millisecond)
++
++	finalGoroutines := runtime.NumGoroutine()
++
++	if finalGoroutines > initialGoroutines {
++		t.Fatalf("goroutine leak: started with %d, ended with %d",
++			initialGoroutines, finalGoroutines)
++	}
++}
++
++// TestProcessAllContextCancellation проверяет, что при отмене ctx
++// ProcessAll не возвращает управление, пока не завершатся все горутины.
++func TestProcessAllContextCancellation(t *testing.T) {
++	items := make([]string, 100)
++	for i := range items {
++		items[i] = fmt.Sprintf("item%d", i)
++	}
++
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++
++	// Отменяем контекст после короткой задержки
++	time.AfterFunc(50*time.Millisecond, cancel)
++
++	got, err := ProcessAll(ctx, items, 10, func(ctx context.Context, s string) (int, error) {
++		// Работаем некоторое время
++		select {
++		case <-ctx.Done():
++			return 0, ctx.Err()
++		case <-time.After(10 * time.Millisecond):
++			return len(s), nil
++		}
++	})
++
++	if err == nil || err != context.Canceled {
++		t.Fatalf("expected context.Canceled, got %v", err)
++	}
++
++	if got != nil {
++		t.Fatalf("expected nil result, got %v", got)
++	}
++}
++
++// TestProcessAllNoGoroutineLeakOnCancel проверяет, что при отмене ctx
++// горутины корректно завершаются.
++func TestProcessAllNoGoroutineLeakOnCancel(t *testing.T) {
++	initialGoroutines := runtime.NumGoroutine()
++
++	items := make([]string, 50)
++	for i := range items {
++		items[i] = fmt.Sprintf("item%d", i)
++	}
++
++	ctx, cancel := context.WithCancel(context.Background())
++
++	// Отменяем контекст после короткой задержки
++	time.AfterFunc(30*time.Millisecond, cancel)
++
++	_, err := ProcessAll(ctx, items, 10, func(ctx context.Context, s string) (int, error) {
++		// Работаем дольше, чем время до отмены
++		select {
++		case <-ctx.Done():
++			return 0, ctx.Err()
++		case <-time.After(1 * time.Second):
++			return len(s), nil
++		}
++	})
++
++	if err != context.Canceled {
++		t.Fatalf("expected context.Canceled, got %v", err)
++	}
++
++	// Даём время горутинам завершиться
++	time.Sleep(100 * time.Millisecond)
++
++	finalGoroutines := runtime.NumGoroutine()
++
++	if finalGoroutines > initialGoroutines {
++		t.Fatalf("goroutine leak on cancel: started with %d, ended with %d",
++			initialGoroutines, finalGoroutines)
++	}
++}
