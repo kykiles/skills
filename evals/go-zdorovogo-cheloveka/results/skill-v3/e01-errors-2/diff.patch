@@ -1,0 +1,104 @@
+diff -ruN -x .git orig/config.go ws/config.go
+--- orig/config.go	2026-10-01 12:37:26.687068675 +0000
++++ ws/config.go	2026-10-01 12:35:53.962514576 +0000
+@@ -37,14 +37,17 @@
+ func Load(path string) (*Config, error) {
+ 	data, err := os.ReadFile(path)
+ 	if err != nil {
+-		return nil, fmt.Errorf("чтение конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("чтение конфигурации: %w", err)
+ 	}
+ 	var cfg Config
+ 	if err := json.Unmarshal(data, &cfg); err != nil {
+-		return nil, fmt.Errorf("разбор конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("разбор конфигурации %s: %w", path, err)
+ 	}
+ 	cfg.applyDefaults()
+-	return &cfg, validate(&cfg)
++	if err := validate(&cfg); err != nil {
++		return nil, err
++	}
++	return &cfg, nil
+ }
+ 
+ func (c *Config) applyDefaults() {
+@@ -56,7 +59,7 @@
+ 	}
+ }
+ 
+-func validate(c *Config) *ValidationError {
++func validate(c *Config) error {
+ 	if c.Port < 1 || c.Port > 65535 {
+ 		return &ValidationError{Field: "port", Reason: "должен быть от 1 до 65535"}
+ 	}
+diff -ruN -x .git orig/config_test.go ws/config_test.go
+--- orig/config_test.go	2026-10-01 12:37:26.687151861 +0000
++++ ws/config_test.go	2026-10-01 12:36:22.006516243 +0000
+@@ -1,6 +1,8 @@
+ package svcconfig
+ 
+ import (
++	"errors"
++	"io/fs"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
+@@ -16,3 +18,58 @@
+ 		t.Fatalf("Load() = %v, %v; want nil config and error", cfg, err)
+ 	}
+ }
++
++// TestLoadNotExist проверяет, что при отсутствии файла
++// возвращается ошибка, которую можно проверить через errors.Is
++func TestLoadNotExist(t *testing.T) {
++	cfg, err := Load("/nonexistent/path/config.json")
++
++	// Проверяем, что ошибка не nil
++	if err == nil {
++		t.Fatalf("Load() returned nil error for nonexistent file, want error")
++	}
++
++	// Проверяем, что cfg == nil при ошибке (не typed nil)
++	if cfg != nil {
++		t.Fatalf("Load() returned non-nil config for nonexistent file, want nil")
++	}
++
++	// Проверяем, что можем перехватить fs.ErrNotExist
++	if !errors.Is(err, fs.ErrNotExist) {
++		t.Fatalf("Load() error is not fs.ErrNotExist: %v", err)
++	}
++}
++
++// TestLoadValid проверяет, что при корректном файле
++// возвращается nil ошибка
++func TestLoadValid(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "config.json")
++	// Минимально корректный конфиг
++	data := []byte(`{"port": 8080}`)
++	if err := os.WriteFile(path, data, 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	cfg, err := Load(path)
++
++	// На успех err должен быть nil (не typed nil)
++	if err != nil {
++		t.Fatalf("Load() returned error for valid config: %v", err)
++	}
++
++	// cfg не должен быть nil на успех
++	if cfg == nil {
++		t.Fatalf("Load() returned nil config on success, want config")
++	}
++
++	// Проверяем значения
++	if cfg.Port != 8080 {
++		t.Fatalf("Port = %d, want 8080", cfg.Port)
++	}
++	if cfg.Addr != "127.0.0.1" {
++		t.Fatalf("Addr = %s, want 127.0.0.1", cfg.Addr)
++	}
++	if cfg.LogLevel != "info" {
++		t.Fatalf("LogLevel = %s, want info", cfg.LogLevel)
++	}
++}

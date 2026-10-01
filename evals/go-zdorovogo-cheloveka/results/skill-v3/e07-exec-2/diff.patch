@@ -1,0 +1,154 @@
+diff -ruN -x .git orig/runner.go ws/runner.go
+--- orig/runner.go	2026-10-01 12:37:29.344953260 +0000
++++ ws/runner.go	2026-10-01 12:35:59.334514896 +0000
+@@ -4,8 +4,9 @@
+ import (
+ 	"bytes"
+ 	"context"
++	"errors"
+ 	"os/exec"
+-	"strings"
++	"time"
+ )
+ 
+ // Result — итог работы программы.
+@@ -15,12 +16,30 @@
+ 	ExitCode int
+ }
+ 
+-// Run запускает программу name с аргументами args и ждёт её завершения.
++// Run запускает программу name с аргументами args, используя контекст ctx.
++// Каждый аргумент доходит до программы как есть: пробелы, кавычки, ;, $, *
++// не интерпретируются.
++//
++// Ненулевой код выхода — не ошибка; код кладётся в Result.ExitCode.
++// Ошибка возвращается только если:
++//   - программу не удалось запустить;
++//   - ctx был отменён, и для возвращённой ошибки errors.Is(err, ctx.Err()) истинно.
+ func Run(ctx context.Context, name string, args ...string) (Result, error) {
+-	cmd := exec.Command("sh", "-c", name+" "+strings.Join(args, " "))
+-	var out bytes.Buffer
+-	cmd.Stdout = &out
+-	cmd.Stderr = &out
++	cmd := exec.CommandContext(ctx, name, args...)
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout, cmd.Stderr = &stdout, &stderr
++	cmd.WaitDelay = 5 * time.Second
++
+ 	err := cmd.Run()
+-	return Result{Stdout: out.String()}, err
++	res := Result{Stdout: stdout.String(), Stderr: stderr.String()}
++	if err != nil && ctx.Err() != nil {
++		// Процесс, убитый при отмене, выглядит как ExitError: сообщаем об отмене.
++		return res, ctx.Err()
++	}
++	var exitErr *exec.ExitError
++	if errors.As(err, &exitErr) {
++		res.ExitCode = exitErr.ExitCode()
++		return res, nil
++	}
++	return res, err
+ }
+diff -ruN -x .git orig/runner_test.go ws/runner_test.go
+--- orig/runner_test.go	2026-10-01 12:37:29.345028537 +0000
++++ ws/runner_test.go	2026-10-01 12:36:17.582515980 +0000
+@@ -2,8 +2,10 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"strings"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestRunEcho(t *testing.T) {
+@@ -15,3 +17,88 @@
+ 		t.Fatalf("Stdout = %q", res.Stdout)
+ 	}
+ }
++
++// TestRunArgumentsWithSpaces проверяет, что аргументы с пробелами доходят до программы как есть.
++func TestRunArgumentsWithSpaces(t *testing.T) {
++	res, err := Run(context.Background(), "printf", "%s\n", "hello world")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.TrimSpace(res.Stdout) != "hello world" {
++		t.Fatalf("Stdout = %q, want %q", res.Stdout, "hello world")
++	}
++}
++
++// TestRunArgumentsWithSpecialChars проверяет, что спецсимволы не интерпретируются.
++func TestRunArgumentsWithSpecialChars(t *testing.T) {
++	// Аргумент с $, *, ;, кавычками не должен интерпретироваться как shell-команда.
++	res, err := Run(context.Background(), "printf", "%s\n", "$ * ; \"")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.TrimSpace(res.Stdout) != "$ * ; \"" {
++		t.Fatalf("Stdout = %q, want %q", res.Stdout, "$ * ; \"")
++	}
++}
++
++// TestRunSeparateStderr проверяет, что stdout и stderr раздельны.
++func TestRunSeparateStderr(t *testing.T) {
++	// printf пишет в stdout, а непарный скрипт может писать в stderr.
++	// Используем встроенную команду sh для простоты тестирования.
++	res, err := Run(context.Background(), "sh", "-c", "echo out; echo err >&2")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(res.Stdout, "out") {
++		t.Fatalf("Stdout = %q, want to contain 'out'", res.Stdout)
++	}
++	if !strings.Contains(res.Stderr, "err") {
++		t.Fatalf("Stderr = %q, want to contain 'err'", res.Stderr)
++	}
++}
++
++// TestRunNonZeroExitCode проверяет, что ненулевой код выхода — не ошибка.
++func TestRunNonZeroExitCode(t *testing.T) {
++	res, err := Run(context.Background(), "sh", "-c", "exit 42")
++	if err != nil {
++		t.Fatalf("Expected no error for non-zero exit, got %v", err)
++	}
++	if res.ExitCode != 42 {
++		t.Fatalf("ExitCode = %d, want 42", res.ExitCode)
++	}
++}
++
++// TestRunContextCancellation проверяет, что отмена ctx приводит к возврату ctx.Err().
++func TestRunContextCancellation(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	// Отменяем контекст до запуска команды.
++	cancel()
++
++	res, err := Run(ctx, "sleep", "10")
++	if err == nil {
++		t.Fatalf("Expected error on context cancellation, got nil")
++	}
++	if !errors.Is(err, context.Canceled) {
++		t.Fatalf("Expected context.Canceled, got %v", err)
++	}
++	// Result должен остаться незаполненным.
++	if res.ExitCode != 0 || res.Stdout != "" || res.Stderr != "" {
++		t.Fatalf("Result should be empty, got %+v", res)
++	}
++}
++
++// TestRunContextTimeout проверяет, что истечение таймаута приводит к ctx.Err().
++func TestRunContextTimeout(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++
++	res, err := Run(ctx, "sleep", "10")
++	if err == nil {
++		t.Fatalf("Expected error on context timeout, got nil")
++	}
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("Expected context.DeadlineExceeded, got %v", err)
++	}
++	// Result может быть частично заполненным в зависимости от таймингов.
++	_ = res
++}

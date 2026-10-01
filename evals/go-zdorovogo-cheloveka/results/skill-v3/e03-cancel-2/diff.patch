@@ -1,0 +1,165 @@
+diff -ruN -x .git orig/batch.go ws/batch.go
+--- orig/batch.go	2026-10-01 12:37:31.492201093 +0000
++++ ws/batch.go	2026-10-01 12:36:08.614515447 +0000
+@@ -1,7 +1,10 @@
+ // Package batch выполняет обработку элементов параллельно.
+ package batch
+ 
+-import "context"
++import (
++	"context"
++	"sync"
++)
+ 
+ // Result — результат обработки одного элемента.
+ type Result struct {
+@@ -16,6 +19,9 @@
+ // элементы и возвращает эту ошибку (или ctx.Err()). ProcessAll не возвращает
+ // управление, пока не завершатся все уже начатые вызовы fn.
+ func ProcessAll(ctx context.Context, items []string, workers int, fn func(context.Context, string) (int, error)) ([]Result, error) {
++	ctx, cancel := context.WithCancel(ctx)
++	defer cancel()
++
+ 	type job struct {
+ 		index int
+ 		item  string
+@@ -27,35 +33,65 @@
+ 	}
+ 
+ 	jobs := make(chan job)
+-	outcomes := make(chan outcome)
++	outcomes := make(chan outcome, workers)
++
++	var wg sync.WaitGroup
++	var mu sync.Mutex
++	var firstErr error
+ 
+ 	for w := 0; w < workers; w++ {
++		wg.Add(1)
+ 		go func() {
++			defer wg.Done()
+ 			for j := range jobs {
+ 				v, err := fn(ctx, j.item)
+-				outcomes <- outcome{j.index, v, err}
++				select {
++				case outcomes <- outcome{j.index, v, err}:
++				case <-ctx.Done():
++					return
++				}
+ 			}
+ 		}()
+ 	}
+ 
+ 	go func() {
+ 		for i, item := range items {
+-			jobs <- job{i, item}
++			select {
++			case jobs <- job{i, item}:
++			case <-ctx.Done():
++				break
++			}
+ 		}
+ 		close(jobs)
+ 	}()
+ 
+ 	results := make([]Result, len(items))
+-	for range items {
++	for i := 0; i < len(items); i++ {
+ 		select {
+ 		case o := <-outcomes:
+ 			if o.err != nil {
+-				return nil, o.err
++				mu.Lock()
++				if firstErr == nil {
++					firstErr = o.err
++					cancel()
++				}
++				mu.Unlock()
++			} else {
++				results[o.index] = Result{Item: items[o.index], Value: o.value}
+ 			}
+-			results[o.index] = Result{Item: items[o.index], Value: o.value}
+ 		case <-ctx.Done():
+-			return nil, ctx.Err()
++			mu.Lock()
++			if firstErr == nil {
++				firstErr = ctx.Err()
++			}
++			mu.Unlock()
+ 		}
+ 	}
++
++	wg.Wait()
++
++	if firstErr != nil {
++		return nil, firstErr
++	}
+ 	return results, nil
+ }
+diff -ruN -x .git orig/batch_test.go ws/batch_test.go
+--- orig/batch_test.go	2026-10-01 12:37:31.492263340 +0000
++++ ws/batch_test.go	2026-10-01 12:36:37.018517136 +0000
+@@ -2,6 +2,8 @@
+ 
+ import (
+ 	"context"
++	"errors"
++	"sync/atomic"
+ 	"testing"
+ )
+ 
+@@ -19,3 +21,54 @@
+ 		}
+ 	}
+ }
++
++func TestProcessAllError(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd"}
++	var started int32
++	testErr := errors.New("test error")
++
++	got, err := ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		atomic.AddInt32(&started, 1)
++		if s == "ccc" {
++			return 0, testErr
++		}
++		return len(s), nil
++	})
++
++	if !errors.Is(err, testErr) {
++		t.Fatalf("expected test error, got %v", err)
++	}
++	if got != nil {
++		t.Fatalf("expected nil result on error, got %+v", got)
++	}
++	// All items should have been started or processed
++	if started == 0 {
++		t.Fatal("no items were processed")
++	}
++}
++
++func TestProcessAllCancellation(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd"}
++	var processed int32
++
++	ctx, cancel := context.WithCancel(context.Background())
++
++	got, err := ProcessAll(ctx, items, 1, func(_ context.Context, s string) (int, error) {
++		atomic.AddInt32(&processed, 1)
++		if s == "bb" {
++			cancel()
++		}
++		return len(s), nil
++	})
++
++	if !errors.Is(err, context.Canceled) {
++		t.Fatalf("expected context.Canceled, got %v", err)
++	}
++	if got != nil {
++		t.Fatalf("expected nil result on cancellation, got %+v", got)
++	}
++	// Ensure all started goroutines completed
++	if processed == 0 {
++		t.Fatal("no items were processed")
++	}
++}
