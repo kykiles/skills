@@ -121,12 +121,18 @@ func TestDeadlineVirtualTime(t *testing.T) {
 
 ## Внешние процессы
 
-Тест, который запускает `sh`, `echo` или `printf`, не работает на Windows. Переносимый способ — сам тестовый бинарник в роли дочерней программы:
+Тест, который запускает `sh`, `echo`, `printf` или `sleep`, не работает на Windows. Переносимый способ — сам тестовый бинарник в роли дочерней программы. Режим помощника передаётся через окружение: дочерний процесс наследует его, даже если команду строит проверяемый код, а не тест.
 
 ```go
+// runChild — проверяемый код: сам строит команду и не даёт тесту доступа к exec.Cmd.
+func runChild(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).Output()
+	return string(out), err
+}
+
 func TestMain(m *testing.M) {
+	// Дочерний режим проверяется до m.Run(): помощник печатает аргументы и выходит.
 	if os.Getenv("TEST_HELPER_MODE") == "echo-args" {
-		// Дочерний режим: печатаем аргументы и выходим, не запуская тесты.
 		fmt.Print(strings.Join(os.Args[1:], "\n"))
 		os.Exit(0)
 	}
@@ -134,20 +140,23 @@ func TestMain(m *testing.M) {
 }
 
 func TestArgsReachChildVerbatim(t *testing.T) {
+	t.Setenv("TEST_HELPER_MODE", "echo-args") // унаследует дочерний процесс
 	args := []string{"a b", `"q"`, "$HOME", "x;y", "*"}
-	cmd := exec.Command(os.Args[0], args...)
-	cmd.Env = append(os.Environ(), "TEST_HELPER_MODE=echo-args")
-	out, err := cmd.Output()
+	out, err := runChild(os.Args[0], args...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Split(string(out), "\n"); !slices.Equal(got, args) {
+	if got := strings.Split(out, "\n"); !slices.Equal(got, args) {
 		t.Fatalf("дочерний процесс получил %q; want %q", got, args)
 	}
 }
 ```
 
-В пакете может быть только один `TestMain`. Если он уже есть, добавь дочерний режим в него.
+**Опасно:** если дочерний процесс не узнаёт свой режим (переменная не задана или проверка стоит после `m.Run()`), он снова запускает те же тесты, а они — следующий процесс. Такая рекурсия за секунды исчерпывает процессы машины. Перед запуском убедись, что режим задан и `TestMain` выходит раньше `m.Run()`.
+
+- В пакете может быть только один `TestMain`. Если он уже есть, добавь дочерний режим в него.
+- `t.Setenv` несовместим с `t.Parallel`.
+- Если этот приём не подходит, тест с программами одной ОС допустим только с явным пропуском на других: `if runtime.GOOS == "windows" { t.Skip("нужен sh") }`. Пропуск назови в отчёте.
 
 ## Рефакторинг
 

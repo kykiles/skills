@@ -1,0 +1,14 @@
+ok   не изменён README.md
+ok   не изменён export.go
+ok   не изменён go.mod
+ok   не изменён level_string.go
+ok   gofmt
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+ok   экспортируемый API не изменён
+ok   go test -race (с оценщиком)
+ok   go test на go1.21.13
+info diff: 2 files changed, 51 insertions(+), 67 deletions(-)
+info новые файлы: export.go 
+RESULT PASS

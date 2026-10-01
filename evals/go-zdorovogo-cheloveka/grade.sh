@@ -70,11 +70,27 @@ fi
 
 # 5. Скрытые тесты оценщика вместе с тестами проекта, под -race.
 cp -r "$case_dir/grader/." "$tmp/ws/"
+# Сторож: тест, который рекурсивно запускает сам себя, исчерпывает процессы
+# контейнера. Больше 200 тестовых процессов — останавливаем их и считаем провалом.
+(
+	while sleep 1; do
+		if [ "$(pgrep -c -f '\.test( |$)')" -gt 200 ]; then
+			touch "$tmp/forkbomb"
+			pkill -9 -f '\.test( |$)'
+		fi
+	done
+) &
+watchdog=$!
 if go test -race -count=1 -timeout 180s ./... >"$tmp/test.log" 2>&1; then
 	ok "go test -race (с оценщиком)"
 else
 	fail "go test -race (с оценщиком)"
 	grep -E -- '^(--- FAIL|FAIL|panic|.*_test\.go:[0-9]+:)' "$tmp/test.log" | head -25
+fi
+kill "$watchdog" 2>/dev/null
+wait "$watchdog" 2>/dev/null
+if [ -e "$tmp/forkbomb" ]; then
+	fail "тесты порождают неограниченное число процессов (остановлены сторожем)"
 fi
 if [ -n "$MIN_GO" ]; then
 	if GOTOOLCHAIN=$MIN_GO go test -count=1 ./... >"$tmp/min.log" 2>&1; then
