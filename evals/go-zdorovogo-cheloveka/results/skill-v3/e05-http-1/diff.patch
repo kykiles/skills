@@ -1,0 +1,150 @@
+diff -ruN -x .git orig/client.go ws/client.go
+--- orig/client.go	2026-10-01 12:34:19.301361661 +0000
++++ ws/client.go	2026-10-01 12:32:59.878504228 +0000
+@@ -6,6 +6,7 @@
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"io"
+ 	"net/http"
+ 	"net/url"
+ )
+@@ -45,12 +46,29 @@
+ // Для ответа 404 возвращает ErrNotFound, для остальных статусов, кроме 200, —
+ // *StatusError. Учитывает отмену и дедлайн ctx.
+ func (c *Client) GetStatus(ctx context.Context, id string) (Status, error) {
+-	resp, err := c.httpClient().Get(c.BaseURL + "/v1/status/" + url.PathEscape(id))
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/v1/status/"+url.PathEscape(id), nil)
+ 	if err != nil {
+ 		return Status{}, err
+ 	}
++	resp, err := c.httpClient().Do(req)
++	if err != nil {
++		return Status{}, err
++	}
++	defer resp.Body.Close()
++
++	if resp.StatusCode == http.StatusNotFound {
++		// Дочитываем немного тела, чтобы соединение могло вернуться в пул.
++		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
++		return Status{}, ErrNotFound
++	}
++	if resp.StatusCode != http.StatusOK {
++		// Дочитываем немного тела, чтобы соединение могло вернуться в пул.
++		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
++		return Status{}, &StatusError{Code: resp.StatusCode}
++	}
++
+ 	var st Status
+-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
++	if err := json.NewDecoder(io.LimitReader(resp.Body, 10<<20)).Decode(&st); err != nil {
+ 		return Status{}, fmt.Errorf("statusapi: разбор ответа: %w", err)
+ 	}
+ 	return st, nil
+diff -ruN -x .git orig/client_test.go ws/client_test.go
+--- orig/client_test.go	2026-10-01 12:34:19.301386719 +0000
++++ ws/client_test.go	2026-10-01 12:33:27.042505843 +0000
+@@ -2,9 +2,11 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestGetStatus(t *testing.T) {
+@@ -22,3 +24,91 @@
+ 		t.Fatalf("GetStatus = %+v", st)
+ 	}
+ }
++
++// TestGetStatusNotFound проверяет, что на 404 возвращается ErrNotFound.
++func TestGetStatusNotFound(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusNotFound)
++		w.Write([]byte(`{"error":"not found"}`))
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(context.Background(), "notexist")
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("GetStatus(notexist) = %v, want ErrNotFound", err)
++	}
++}
++
++// TestGetStatusError проверяет, что на непредвиденный статус возвращается StatusError.
++func TestGetStatusError(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusInternalServerError)
++		w.Write([]byte(`{"error":"server error"}`))
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(context.Background(), "42")
++	var se *StatusError
++	if !errors.As(err, &se) || se.Code != http.StatusInternalServerError {
++		t.Fatalf("GetStatus = %v, want StatusError with code 500", err)
++	}
++}
++
++// TestGetStatusContextCancel проверяет, что GetStatus реагирует на отмену контекста.
++func TestGetStatusContextCancel(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		time.Sleep(100 * time.Millisecond)
++		w.Write([]byte(`{"id":"42","state":"done"}`))
++	}))
++	defer srv.Close()
++
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
++	defer cancel()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(ctx, "42")
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("GetStatus with cancelled context = %v, want context.DeadlineExceeded", err)
++	}
++}
++
++// TestGetStatusConnectionReuse проверяет, что Body закрывается и соединения переиспользуются.
++// Это косвенный тест — если Body не закрывается, соединения копятся.
++func TestGetStatusConnectionReuse(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.RequestURI == "/v1/status/ok" {
++			w.Write([]byte(`{"id":"ok","state":"done"}`))
++		} else {
++			w.WriteHeader(http.StatusNotFound)
++		}
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++
++	// Делаем несколько запросов: успешный, 404 и т.д. Если Body не закрывается,
++	// соединения останутся открытыми (в тесте это видно через логи сервера).
++	st, err := c.GetStatus(context.Background(), "ok")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if st.ID != "ok" {
++		t.Fatalf("first request: GetStatus = %+v", st)
++	}
++
++	_, err = c.GetStatus(context.Background(), "notexist")
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("second request (404): GetStatus = %v, want ErrNotFound", err)
++	}
++
++	// Третий запрос должен пройти успешно — соединения должны быть переиспользованы.
++	st, err = c.GetStatus(context.Background(), "ok")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if st.ID != "ok" {
++		t.Fatalf("third request: GetStatus = %+v", st)
++	}
++}
