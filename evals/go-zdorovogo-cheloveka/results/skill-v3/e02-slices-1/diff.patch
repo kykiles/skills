@@ -1,0 +1,69 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 12:34:06.448501203 +0000
++++ ws/cmdargs.go	2026-10-01 12:33:15.174505137 +0000
+@@ -4,13 +4,16 @@
+ // Build возвращает base, за которыми следуют extra.
+ // base не изменяется.
+ func Build(base []string, extra ...string) []string {
+-	return append(base, extra...)
++	result := make([]string, len(base)+len(extra))
++	copy(result, base)
++	copy(result[len(base):], extra)
++	return result
+ }
+ 
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+ // args не изменяется.
+ func WithoutEmpty(args []string) []string {
+-	out := args[:0]
++	var out []string
+ 	for _, a := range args {
+ 		if a != "" {
+ 			out = append(out, a)
+diff -ruN -x .git orig/cmdargs_test.go ws/cmdargs_test.go
+--- orig/cmdargs_test.go	2026-10-01 12:34:06.448752407 +0000
++++ ws/cmdargs_test.go	2026-10-01 12:33:33.650506236 +0000
+@@ -20,3 +20,43 @@
+ 		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
+ 	}
+ }
++
++func TestMultipleCommands(t *testing.T) {
++	// Проверяем, что разные команды с одним профилем не влияют друг на друга
++	profile := NewProfile("--user-flag")
++
++	cmd1 := profile.Command("extra1")
++	cmd2 := profile.Command("extra2")
++
++	// cmd1 должна быть: ["--quiet", "--color=never", "--user-flag", "extra1"]
++	// cmd2 должна быть: ["--quiet", "--color=never", "--user-flag", "extra2"]
++	want1 := []string{"--quiet", "--color=never", "--user-flag", "extra1"}
++	want2 := []string{"--quiet", "--color=never", "--user-flag", "extra2"}
++
++	if !slices.Equal(cmd1, want1) {
++		t.Fatalf("cmd1 = %q; want %q", cmd1, want1)
++	}
++	if !slices.Equal(cmd2, want2) {
++		t.Fatalf("cmd2 = %q; want %q", cmd2, want2)
++	}
++}
++
++func TestBuildDoesNotModifyInput(t *testing.T) {
++	// Проверяем, что Build не модифицирует входной срез
++	base := []string{"a", "b"}
++	baseCopy := []string{"a", "b"}
++	_ = Build(base, "c")
++	if !slices.Equal(base, baseCopy) {
++		t.Fatalf("Build modified input: got %q; want %q", base, baseCopy)
++	}
++}
++
++func TestWithoutEmptyDoesNotModifyInput(t *testing.T) {
++	// Проверяем, что WithoutEmpty не модифицирует входной срез
++	args := []string{"a", "", "b"}
++	argsCopy := []string{"a", "", "b"}
++	_ = WithoutEmpty(args)
++	if !slices.Equal(args, argsCopy) {
++		t.Fatalf("WithoutEmpty modified input: got %q; want %q", args, argsCopy)
++	}
++}
