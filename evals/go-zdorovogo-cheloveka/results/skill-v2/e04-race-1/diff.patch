@@ -1,5 +1,5 @@
 diff -ruN -x .git orig/cache.go ws/cache.go
---- orig/cache.go	2026-10-01 12:31:14.818575287 +0000
+--- orig/cache.go	2026-10-01 12:38:30.705919664 +0000
 +++ ws/cache.go	2026-10-01 12:30:31.634495416 +0000
 @@ -33,6 +33,8 @@
  
@@ -20,7 +20,7 @@ diff -ruN -x .git orig/cache.go ws/cache.go
  	defer c.mu.Unlock()
  	return len(c.items)
 diff -ruN -x .git orig/cache_test.go ws/cache_test.go
---- orig/cache_test.go	2026-10-01 12:31:14.818756941 +0000
+--- orig/cache_test.go	2026-10-01 12:38:30.705942148 +0000
 +++ ws/cache_test.go	2026-10-01 12:28:14.514487265 +0000
 @@ -1,6 +1,7 @@
  package ttlcache
