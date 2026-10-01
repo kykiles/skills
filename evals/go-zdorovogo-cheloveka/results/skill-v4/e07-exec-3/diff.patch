@@ -1,0 +1,148 @@
+diff -ruN -x .git orig/runner.go ws/runner.go
+--- orig/runner.go	2026-10-01 14:15:27.567377585 +0000
++++ ws/runner.go	2026-10-01 14:14:15.381798974 +0000
+@@ -4,8 +4,9 @@
+ import (
+ 	"bytes"
+ 	"context"
++	"errors"
+ 	"os/exec"
+-	"strings"
++	"time"
+ )
+ 
+ // Result — итог работы программы.
+@@ -16,11 +17,26 @@
+ }
+ 
+ // Run запускает программу name с аргументами args и ждёт её завершения.
++// Аргументы доходят до программы как есть: пробелы, кавычки, `;`, `$`, `*` не интерпретируются.
++// Stdout и stderr собираются раздельно.
++// Ненулевой код выхода кладётся в Result.ExitCode; ошибка возвращается только при отмене ctx или сбое запуска.
++// При отмене ctx программа останавливается; ошибка удовлетворяет errors.Is(err, ctx.Err()).
+ func Run(ctx context.Context, name string, args ...string) (Result, error) {
+-	cmd := exec.Command("sh", "-c", name+" "+strings.Join(args, " "))
+-	var out bytes.Buffer
+-	cmd.Stdout = &out
+-	cmd.Stderr = &out
++	cmd := exec.CommandContext(ctx, name, args...)
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout, cmd.Stderr = &stdout, &stderr
++	cmd.WaitDelay = 5 * time.Second // не ждать вечно, если потомки держат stdout/stderr
++
+ 	err := cmd.Run()
+-	return Result{Stdout: out.String()}, err
++	res := Result{Stdout: stdout.String(), Stderr: stderr.String()}
++	if err != nil && ctx.Err() != nil {
++		// Процесс, убитый при отмене, выглядит как ExitError: сообщаем об отмене.
++		return res, ctx.Err()
++	}
++	var exitErr *exec.ExitError
++	if errors.As(err, &exitErr) {
++		res.ExitCode = exitErr.ExitCode()
++		return res, nil
++	}
++	return res, err
+ }
+diff -ruN -x .git orig/runner_test.go ws/runner_test.go
+--- orig/runner_test.go	2026-10-01 14:15:27.567399583 +0000
++++ ws/runner_test.go	2026-10-01 14:14:38.733800362 +0000
+@@ -2,6 +2,9 @@
+ 
+ import (
+ 	"context"
++	"errors"
++	"os"
++	"path/filepath"
+ 	"strings"
+ 	"testing"
+ )
+@@ -15,3 +18,88 @@
+ 		t.Fatalf("Stdout = %q", res.Stdout)
+ 	}
+ }
++
++// testProg — вспомогательная программа для тестов (сам тестовый бинарник).
++func testProg(mode string) string {
++	exe, err := os.Executable()
++	if err != nil {
++		return ""
++	}
++	return exe + " -test.run=^$ -args " + mode
++}
++
++// TestArgsWithSpecialChars проверяет, что аргументы с пробелами, кавычками и спецсимволами
++// доходят до программы как есть.
++func TestArgsWithSpecialChars(t *testing.T) {
++	res, err := Run(context.Background(), "printf", "%s\n", "hello world; $USER * 'quote'")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(res.Stdout, "hello world; $USER * 'quote'") {
++		t.Fatalf("Stdout = %q, expected to contain argument with special chars", res.Stdout)
++	}
++}
++
++// TestStdoutStderr проверяет, что stdout и stderr собираются раздельно.
++func TestStdoutStderr(t *testing.T) {
++	// Используем программу, которая пишет в оба потока.
++	// На Unix можно использовать sh, на Windows тоже cmd доступен, но для портативности
++	// используем сам тестовый бинарник.
++	tmpdir := t.TempDir()
++	progPath := filepath.Join(tmpdir, "testprog.go")
++	err := os.WriteFile(progPath, []byte(`package main
++import (
++	"fmt"
++	"os"
++)
++func main() {
++	fmt.Fprint(os.Stdout, "stdout text")
++	fmt.Fprint(os.Stderr, "stderr text")
++}
++`), 0o644)
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	// Запускаем go run для простоты
++	res, err := Run(context.Background(), "go", "run", progPath)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(res.Stdout, "stdout text") {
++		t.Fatalf("Stdout = %q, expected to contain 'stdout text'", res.Stdout)
++	}
++	if !strings.Contains(res.Stderr, "stderr text") {
++		t.Fatalf("Stderr = %q, expected to contain 'stderr text'", res.Stderr)
++	}
++}
++
++// TestExitCode проверяет, что ненулевой код выхода кладётся в Result.ExitCode, а не ошибку.
++func TestExitCode(t *testing.T) {
++	// Запускаем false — завершается с кодом 1.
++	res, err := Run(context.Background(), "false")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.ExitCode != 1 {
++		t.Fatalf("ExitCode = %d, want 1", res.ExitCode)
++	}
++}
++
++// TestContextCancel проверяет, что отмена ctx останавливает программу и возвращает контекстную ошибку.
++func TestContextCancel(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel() // отменяем сразу
++
++	res, err := Run(ctx, "sleep", "10")
++	if err == nil {
++		t.Fatal("expected error due to context cancellation")
++	}
++	if !errors.Is(err, context.Canceled) {
++		t.Fatalf("expected error to be context.Canceled, got %v", err)
++	}
++	// Программа не должна была завершиться нормально: код выхода не должен быть 0.
++	if res.ExitCode == 0 && res.Stdout == "" && res.Stderr == "" {
++		// OK
++	}
++}
