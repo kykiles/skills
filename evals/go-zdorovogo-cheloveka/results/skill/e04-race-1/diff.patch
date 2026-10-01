@@ -1,0 +1,70 @@
+diff -ruN -x .git orig/cache.go ws/cache.go
+--- orig/cache.go	2026-10-01 12:25:25.364764584 +0000
++++ ws/cache.go	2026-10-01 12:24:19.202473278 +0000
+@@ -33,6 +33,8 @@
+ 
+ // Get возвращает значение, если оно есть и не устарело.
+ func (c *Cache) Get(key string) (string, bool) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
+ 	e, ok := c.items[key]
+ 	if !ok || time.Now().After(e.expires) {
+ 		return "", false
+@@ -41,7 +43,7 @@
+ }
+ 
+ // Len возвращает число записей, включая устаревшие, но ещё не удалённые.
+-func (c Cache) Len() int {
++func (c *Cache) Len() int {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()
+ 	return len(c.items)
+diff -ruN -x .git orig/cache_test.go ws/cache_test.go
+--- orig/cache_test.go	2026-10-01 12:25:25.364783324 +0000
++++ ws/cache_test.go	2026-10-01 12:23:59.290472094 +0000
+@@ -1,6 +1,7 @@
+ package ttlcache
+ 
+ import (
++	"sync"
+ 	"testing"
+ 	"time"
+ )
+@@ -15,3 +16,37 @@
+ 		t.Fatal("Get(b) found missing key")
+ 	}
+ }
++
++func TestConcurrentAccess(t *testing.T) {
++	c := New(time.Minute)
++	var wg sync.WaitGroup
++
++	// Горутина для записи
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 100; i++ {
++			c.Set("key", "value")
++		}
++	}()
++
++	// Горутина для чтения
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		for i := 0; i < 100; i++ {
++			c.Get("key")
++		}
++	}()
++
++	// Горутина для cleanup
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		stop := c.StartCleanup(1 * time.Millisecond)
++		defer stop()
++		time.Sleep(50 * time.Millisecond)
++	}()
++
++	wg.Wait()
++}

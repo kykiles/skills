@@ -1,0 +1,146 @@
+diff -ruN -x .git orig/scan.go ws/scan.go
+--- orig/scan.go	2026-10-01 12:25:51.662241212 +0000
++++ ws/scan.go	2026-10-01 12:23:58.446472044 +0000
+@@ -16,7 +16,6 @@
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		defer f.Close()
+ 
+ 		n := 0
+ 		sc := bufio.NewScanner(f)
+@@ -25,6 +24,11 @@
+ 				n++
+ 			}
+ 		}
++		if err := sc.Err(); err != nil {
++			f.Close()
++			return nil, err
++		}
++		f.Close()
+ 		res[p] = n
+ 	}
+ 	return res, nil
+diff -ruN -x .git orig/scan_test.go ws/scan_test.go
+--- orig/scan_test.go	2026-10-01 12:25:51.662321422 +0000
++++ ws/scan_test.go	2026-10-01 12:24:36.862474327 +0000
+@@ -1,6 +1,7 @@
+ package logscan
+ 
+ import (
++	"fmt"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
+@@ -20,3 +21,64 @@
+ 		t.Fatalf("CountMatches = %v; want 2", got)
+ 	}
+ }
++
++// TestCountMatchesMultipleFiles проверяет корректную работу с множеством файлов
++// и то, что файлы закрываются правильно (не приводит к "too many open files")
++func TestCountMatchesMultipleFiles(t *testing.T) {
++	dir := t.TempDir()
++
++	// Создаем 100 файлов
++	paths := make([]string, 100)
++	for i := 0; i < 100; i++ {
++		p := filepath.Join(dir, fmt.Sprintf("file_%03d.log", i))
++		content := "line1\nline2\nerror line\nline4\n"
++		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		paths[i] = p
++	}
++
++	got, err := CountMatches(paths, "error")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	// Каждый файл должен содержать ровно 1 совпадение "error"
++	for _, p := range paths {
++		if got[p] != 1 {
++			t.Errorf("CountMatches for %s = %d; want 1", p, got[p])
++		}
++	}
++}
++
++// TestCountMatchesLargeFile проверяет корректное подсчета в большом файле
++// и что ошибки при чтении не пропускаются
++func TestCountMatchesLargeFile(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "large.log")
++
++	// Создаем большой файл с известным числом совпадений
++	content := ""
++	expectedMatches := 0
++	for i := 0; i < 10000; i++ {
++		if i%7 == 0 {
++			content += "error line\n"
++			expectedMatches++
++		} else {
++			content += "ok line\n"
++		}
++	}
++
++	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	got, err := CountMatches([]string{p}, "error")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if got[p] != expectedMatches {
++		t.Fatalf("CountMatches = %d; want %d", got[p], expectedMatches)
++	}
++}
+diff -ruN -x .git orig/stress_test.go ws/stress_test.go
+--- orig/stress_test.go	1970-01-01 00:00:00.000000000 +0000
++++ ws/stress_test.go	2026-10-01 12:25:04.106475947 +0000
+@@ -0,0 +1,43 @@
++package logscan
++
++import (
++	"fmt"
++	"os"
++	"path/filepath"
++	"testing"
++)
++
++// TestCountMatchesThousandFiles проверяет, что функция может обработать
++// тысячу файлов без ошибки "too many open files"
++func TestCountMatchesThousandFiles(t *testing.T) {
++	if testing.Short() {
++		t.Skip("Skipping stress test in short mode")
++	}
++
++	dir := t.TempDir()
++
++	// Создаем 1000 файлов
++	paths := make([]string, 1000)
++	for i := 0; i < 1000; i++ {
++		p := filepath.Join(dir, fmt.Sprintf("file_%04d.log", i))
++		content := "normal line\nerror line\ninfo line\n"
++		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		paths[i] = p
++	}
++
++	got, err := CountMatches(paths, "error")
++	if err != nil {
++		t.Fatalf("CountMatches failed with %v", err)
++	}
++
++	// Каждый файл должен содержать ровно 1 совпадение "error"
++	for _, p := range paths {
++		if got[p] != 1 {
++			t.Errorf("CountMatches for %s = %d; want 1", p, got[p])
++		}
++	}
++
++	t.Logf("Successfully processed %d files", len(paths))
++}

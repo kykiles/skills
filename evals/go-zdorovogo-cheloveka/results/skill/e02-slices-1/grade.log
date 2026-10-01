@@ -1,0 +1,13 @@
+ok   не изменён go.mod
+ok   gofmt
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+FAIL go test -race (с оценщиком)
+--- FAIL: TestGraderBuildDoesNotShareSpareCapacity (0.00s)
+    zz_grader_test.go:16: first = ["-a" "-b" "two"] after second Build; want [-a -b one]
+FAIL
+FAIL	example.com/cmdargs	0.014s
+FAIL
+info diff: 2 files changed, 24 insertions(+), 1 deletion(-)
+RESULT FAIL (1)

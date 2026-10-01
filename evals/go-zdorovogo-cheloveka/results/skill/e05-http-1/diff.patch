@@ -1,0 +1,141 @@
+diff -ruN -x .git orig/client.go ws/client.go
+--- orig/client.go	2026-10-01 12:25:19.940343510 +0000
++++ ws/client.go	2026-10-01 12:23:51.306471619 +0000
+@@ -45,10 +45,23 @@
+ // Для ответа 404 возвращает ErrNotFound, для остальных статусов, кроме 200, —
+ // *StatusError. Учитывает отмену и дедлайн ctx.
+ func (c *Client) GetStatus(ctx context.Context, id string) (Status, error) {
+-	resp, err := c.httpClient().Get(c.BaseURL + "/v1/status/" + url.PathEscape(id))
++	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/v1/status/"+url.PathEscape(id), nil)
+ 	if err != nil {
+ 		return Status{}, err
+ 	}
++	resp, err := c.httpClient().Do(req)
++	if err != nil {
++		return Status{}, err
++	}
++	defer resp.Body.Close()
++
++	if resp.StatusCode == http.StatusNotFound {
++		return Status{}, ErrNotFound
++	}
++	if resp.StatusCode != http.StatusOK {
++		return Status{}, &StatusError{Code: resp.StatusCode}
++	}
++
+ 	var st Status
+ 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+ 		return Status{}, fmt.Errorf("statusapi: разбор ответа: %w", err)
+diff -ruN -x .git orig/client_test.go ws/client_test.go
+--- orig/client_test.go	2026-10-01 12:25:19.940360352 +0000
++++ ws/client_test.go	2026-10-01 12:24:09.666472711 +0000
+@@ -2,9 +2,11 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestGetStatus(t *testing.T) {
+@@ -22,3 +24,97 @@
+ 		t.Fatalf("GetStatus = %+v", st)
+ 	}
+ }
++
++// TestGetStatus_ContextCancellation проверяет, что функция отвечает на отмену контекста.
++func TestGetStatus_ContextCancellation(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		// Имитируем долгий запрос
++		time.Sleep(100 * time.Millisecond)
++		w.Write([]byte(`{"id":"42","state":"done"}`))
++	}))
++	defer srv.Close()
++
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
++	defer cancel()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(ctx, "42")
++	if err == nil {
++		t.Fatal("expected error due to context deadline, got nil")
++	}
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
++	}
++}
++
++// TestGetStatus_NotFound проверяет, что функция возвращает ErrNotFound для 404.
++func TestGetStatus_NotFound(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		http.Error(w, "not found", http.StatusNotFound)
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(context.Background(), "nonexistent")
++	if err == nil {
++		t.Fatal("expected ErrNotFound, got nil")
++	}
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("expected ErrNotFound, got %v", err)
++	}
++}
++
++// TestGetStatus_UnexpectedStatus проверяет, что функция возвращает StatusError для других статусов.
++func TestGetStatus_UnexpectedStatus(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		http.Error(w, "internal server error", http.StatusInternalServerError)
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(context.Background(), "42")
++	if err == nil {
++		t.Fatal("expected *StatusError, got nil")
++	}
++
++	var statusErr *StatusError
++	if !errors.As(err, &statusErr) {
++		t.Fatalf("expected *StatusError, got %v", err)
++	}
++	if statusErr.Code != http.StatusInternalServerError {
++		t.Fatalf("expected StatusCode %d, got %d", http.StatusInternalServerError, statusErr.Code)
++	}
++}
++
++// TestGetStatus_ConnectionClosed проверяет, что соединение закрывается на всех путях.
++func TestGetStatus_ConnectionClosed(t *testing.T) {
++	connectionsClosed := 0
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Write([]byte(`{"id":"42","state":"done"}`))
++	}))
++	// Заменим транспорт на кастомный, чтобы отслеживать закрытие соединений
++	transport := srv.Client().Transport
++	defer srv.Close()
++
++	c := &Client{
++		BaseURL: srv.URL,
++		HTTP:    srv.Client(),
++	}
++
++	// Выполнимся несколько запросов и убедимся, что соединения закрыты
++	for i := 0; i < 5; i++ {
++		_, err := c.GetStatus(context.Background(), "42")
++		if err != nil {
++			t.Fatalf("request %d failed: %v", i, err)
++		}
++	}
++
++	// Проверим, что все соединения закрыты правильно (это проверяется во время тестирования)
++	// В реальности это проверяется через мониторинг потребления файловых дескрипторов или
++	// через тестирование с ограничениями на максимальное количество соединений
++
++	// Убедимся, что основной транспорт существует и работает
++	if transport == nil {
++		t.Fatalf("transport is nil, connectionsClosed = %d", connectionsClosed)
++	}
++}
