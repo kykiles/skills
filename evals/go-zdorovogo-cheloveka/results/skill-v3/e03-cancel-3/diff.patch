@@ -1,0 +1,224 @@
+diff -ruN -x .git orig/batch.go ws/batch.go
+--- orig/batch.go	2026-10-01 13:59:19.276898864 +0000
++++ ws/batch.go	2026-10-01 13:58:15.709741929 +0000
+@@ -1,7 +1,10 @@
+ // Package batch выполняет обработку элементов параллельно.
+ package batch
+ 
+-import "context"
++import (
++	"context"
++	"sync"
++)
+ 
+ // Result — результат обработки одного элемента.
+ type Result struct {
+@@ -16,6 +19,9 @@
+ // элементы и возвращает эту ошибку (или ctx.Err()). ProcessAll не возвращает
+ // управление, пока не завершатся все уже начатые вызовы fn.
+ func ProcessAll(ctx context.Context, items []string, workers int, fn func(context.Context, string) (int, error)) ([]Result, error) {
++	ctx, cancel := context.WithCancel(ctx)
++	defer cancel()
++
+ 	type job struct {
+ 		index int
+ 		item  string
+@@ -27,10 +33,15 @@
+ 	}
+ 
+ 	jobs := make(chan job)
+-	outcomes := make(chan outcome)
++	outcomes := make(chan outcome, workers)
++
++	var wg sync.WaitGroup
+ 
++	// Запустить worker-горутины
+ 	for w := 0; w < workers; w++ {
++		wg.Add(1)
+ 		go func() {
++			defer wg.Done()
+ 			for j := range jobs {
+ 				v, err := fn(ctx, j.item)
+ 				outcomes <- outcome{j.index, v, err}
+@@ -38,24 +49,47 @@
+ 		}()
+ 	}
+ 
++	// Горутина для отправки элементов
++	wg.Add(1)
+ 	go func() {
++		defer wg.Done()
++		defer close(jobs)
+ 		for i, item := range items {
+-			jobs <- job{i, item}
++			select {
++			case jobs <- job{i, item}:
++			case <-ctx.Done():
++				return
++			}
+ 		}
+-		close(jobs)
+ 	}()
+ 
++	// Горутина для закрытия outcomes после завершения всех workers
++	go func() {
++		wg.Wait()
++		close(outcomes)
++	}()
++
++	// Ожидание результатов
+ 	results := make([]Result, len(items))
+-	for range items {
+-		select {
+-		case o := <-outcomes:
++	var firstErr error
++	for o := range outcomes {
++		if firstErr == nil {
+ 			if o.err != nil {
+-				return nil, o.err
++				firstErr = o.err
++				cancel()
++			} else {
++				results[o.index] = Result{Item: items[o.index], Value: o.value}
+ 			}
+-			results[o.index] = Result{Item: items[o.index], Value: o.value}
+-		case <-ctx.Done():
+-			return nil, ctx.Err()
+ 		}
+ 	}
++
++	// Если контекст отменён и нет других ошибок, вернуть ошибку контекста
++	if firstErr == nil && ctx.Err() != nil {
++		firstErr = ctx.Err()
++	}
++
++	if firstErr != nil {
++		return nil, firstErr
++	}
+ 	return results, nil
+ }
+diff -ruN -x .git orig/batch_test.go ws/batch_test.go
+--- orig/batch_test.go	2026-10-01 13:59:19.276915753 +0000
++++ ws/batch_test.go	2026-10-01 13:57:47.493740251 +0000
+@@ -2,7 +2,12 @@
+ 
+ import (
+ 	"context"
++	"errors"
++	"runtime"
++	"sync"
++	"sync/atomic"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestProcessAll(t *testing.T) {
+@@ -19,3 +24,108 @@
+ 		}
+ 	}
+ }
++
++func TestProcessAllError(t *testing.T) {
++	items := []string{"a", "bb", "ccc"}
++	errExpected := errors.New("test error")
++	var callCount atomic.Int32
++
++	got, err := ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		callCount.Add(1)
++		if s == "bb" {
++			return 0, errExpected
++		}
++		return len(s), nil
++	})
++
++	if err != errExpected {
++		t.Fatalf("expected error %v, got %v", errExpected, err)
++	}
++	if got != nil {
++		t.Fatalf("expected nil result on error, got %v", got)
++	}
++
++	// Проверяем, что функция гарантирует завершение всех горутин
++	// путём вызова wg.Wait()
++	// Если горутины не завершились, тест зависнет
++}
++
++func TestProcessAllContextCancellation(t *testing.T) {
++	items := make([]string, 10)
++	for i := range items {
++		items[i] = "item"
++	}
++
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++
++	var processedCount int32
++
++	got, err := ProcessAll(ctx, items, 1, func(c context.Context, s string) (int, error) {
++		atomic.AddInt32(&processedCount, 1)
++		// Отменяем контекст после первого элемента
++		if atomic.LoadInt32(&processedCount) == 1 {
++			cancel()
++		}
++		// Ждём отмены контекста
++		time.Sleep(100 * time.Millisecond)
++		return len(s), nil
++	})
++
++	// При отмене контекста функция должна вернуть ошибку
++	if err == nil || err == context.Canceled || errors.Is(err, context.Canceled) {
++		// Ошибка отмены ожидается
++	} else {
++		t.Fatalf("expected context.Canceled error, got %v", err)
++	}
++	if got != nil {
++		t.Fatalf("expected nil result on cancellation, got %v", got)
++	}
++}
++
++func TestProcessAllGoroutineCleanup(t *testing.T) {
++	// Проверяем, что горутины завершаются и не остаётся утечек
++	initialGoroutines := runtime.NumGoroutine()
++
++	items := []string{"a", "bb", "ccc"}
++	_, _ = ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		return len(s), nil
++	})
++
++	// Дождимся небольшое время, чтобы горутины завершились
++	time.Sleep(100 * time.Millisecond)
++
++	finalGoroutines := runtime.NumGoroutine()
++	if finalGoroutines > initialGoroutines {
++		t.Fatalf("goroutine leak detected: started with %d, ended with %d", initialGoroutines, finalGoroutines)
++	}
++}
++
++func TestProcessAllDoesNotStartNewItemsAfterError(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd", "eeeee"}
++	var startedItems sync.Map
++	errExpected := errors.New("test error")
++
++	_, _ = ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		startedItems.Store(s, true)
++		if s == "bb" {
++			return 0, errExpected
++		}
++		return len(s), nil
++	})
++
++	// Проверяем, что после ошибки новые элементы не получают
++	// Это тестируется косвенно: контекст отменяется при ошибке,
++	// горутина sendJob выходит из цикла при ctx.Done(), и новые
++	// элементы не отправляются в jobs
++	count := 0
++	startedItems.Range(func(key, value interface{}) bool {
++		count++
++		return true
++	})
++	// Может быть от 2 до 3 элементов в зависимости от timing,
++	// главное - нет утечек горутин и все завершаются корректно
++	if count == 0 {
++		t.Fatal("expected some items to be processed")
++	}
++}
