@@ -1,0 +1,14 @@
+ok   не изменён go.mod
+ok   gofmt
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+ok   GOOS=windows go vet
+FAIL go test -race (с оценщиком)
+--- FAIL: TestGraderDeadlineStopsChild (0.20s)
+    zz_grader_test.go:92: err = <nil>; want errors.Is(err, context.DeadlineExceeded)
+FAIL
+FAIL	example.com/runner	0.430s
+FAIL
+info diff: 2 files changed, 110 insertions(+), 6 deletions(-)
+RESULT FAIL (1)

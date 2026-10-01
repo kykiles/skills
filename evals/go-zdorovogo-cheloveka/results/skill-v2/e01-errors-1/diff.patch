@@ -1,0 +1,24 @@
+diff -ruN -x .git orig/config.go ws/config.go
+--- orig/config.go	2026-10-01 12:30:32.902912981 +0000
++++ ws/config.go	2026-10-01 12:28:34.886488476 +0000
+@@ -37,14 +37,17 @@
+ func Load(path string) (*Config, error) {
+ 	data, err := os.ReadFile(path)
+ 	if err != nil {
+-		return nil, fmt.Errorf("чтение конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("чтение конфигурации %s: %w", path, err)
+ 	}
+ 	var cfg Config
+ 	if err := json.Unmarshal(data, &cfg); err != nil {
+-		return nil, fmt.Errorf("разбор конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("разбор конфигурации %s: %w", path, err)
+ 	}
+ 	cfg.applyDefaults()
+-	return &cfg, validate(&cfg)
++	if ve := validate(&cfg); ve != nil {
++		return nil, ve
++	}
++	return &cfg, nil
+ }
+ 
+ func (c *Config) applyDefaults() {

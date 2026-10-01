@@ -1,0 +1,95 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 12:20:49.639359002 +0000
++++ ws/cmdargs.go	2026-10-01 12:07:22.666335174 +0000
+@@ -4,13 +4,15 @@
+ // Build возвращает base, за которыми следуют extra.
+ // base не изменяется.
+ func Build(base []string, extra ...string) []string {
+-	return append(base, extra...)
++	result := make([]string, len(base), len(base)+len(extra))
++	copy(result, base)
++	return append(result, extra...)
+ }
+ 
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+ // args не изменяется.
+ func WithoutEmpty(args []string) []string {
+-	out := args[:0]
++	out := make([]string, 0, len(args))
+ 	for _, a := range args {
+ 		if a != "" {
+ 			out = append(out, a)
+diff -ruN -x .git orig/cmdargs_test.go ws/cmdargs_test.go
+--- orig/cmdargs_test.go	2026-10-01 12:20:49.639544859 +0000
++++ ws/cmdargs_test.go	2026-10-01 12:07:51.386414559 +0000
+@@ -20,3 +20,70 @@
+ 		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
+ 	}
+ }
++
++// TestMultipleCommands демонстрирует проблему:
++// если собрать аргументы двух команд заранее,
++// у первой команды оказываются аргументы второй.
++func TestMultipleCommands(t *testing.T) {
++	profile := NewProfile()
++	
++	// Собираем аргументы для двух команд заранее
++	cmd1 := profile.Command("run", "x")
++	cmd2 := profile.Command("test", "y")
++	
++	// cmd1 не должна содержать аргументы от cmd2
++	wantCmd1 := []string{"--quiet", "--color=never", "run", "x"}
++	wantCmd2 := []string{"--quiet", "--color=never", "test", "y"}
++	
++	if !slices.Equal(cmd1, wantCmd1) {
++		t.Fatalf("cmd1 = %q; want %q", cmd1, wantCmd1)
++	}
++	if !slices.Equal(cmd2, wantCmd2) {
++		t.Fatalf("cmd2 = %q; want %q", cmd2, wantCmd2)
++	}
++}
++
++func TestBuildWithEmptyExtra(t *testing.T) {
++	got := Build([]string{"-v"})
++	want := []string{"-v"}
++	if !slices.Equal(got, want) {
++		t.Fatalf("Build() = %q; want %q", got, want)
++	}
++}
++
++func TestBuildDoesNotMutateBase(t *testing.T) {
++	base := []string{"-v", "-q"}
++	original := slices.Clone(base)
++	Build(base, "run")
++	if !slices.Equal(base, original) {
++		t.Fatalf("Build() mutated base: got %q; want %q", base, original)
++	}
++}
++
++func TestWithoutEmptyWithoutAnyEmpty(t *testing.T) {
++	got := WithoutEmpty([]string{"a", "b", "c"})
++	want := []string{"a", "b", "c"}
++	if !slices.Equal(got, want) {
++		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
++	}
++}
++
++func TestWithoutEmptyAllEmpty(t *testing.T) {
++	got := WithoutEmpty([]string{"", "", ""})
++	want := []string{}
++	if !slices.Equal(got, want) {
++		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
++	}
++}
++
++func TestProfileDoesNotMutate(t *testing.T) {
++	profile := NewProfile("--debug")
++	baseOriginal := slices.Clone(profile.Base)
++	
++	_ = profile.Command("install", "pkg")
++	_ = profile.Command("update")
++	
++	if !slices.Equal(profile.Base, baseOriginal) {
++		t.Fatalf("Profile.Base was mutated: got %q; want %q", profile.Base, baseOriginal)
++	}
++}

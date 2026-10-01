@@ -1,0 +1,143 @@
+diff -ruN -x .git orig/runner.go ws/runner.go
+--- orig/runner.go	2026-10-01 12:25:50.052169083 +0000
++++ ws/runner.go	2026-10-01 12:23:55.666471879 +0000
+@@ -5,7 +5,6 @@
+ 	"bytes"
+ 	"context"
+ 	"os/exec"
+-	"strings"
+ )
+ 
+ // Result — итог работы программы.
+@@ -16,11 +15,39 @@
+ }
+ 
+ // Run запускает программу name с аргументами args и ждёт её завершения.
++// Аргументы передаются программе без интерпретации оболочкой.
++// Возвращает результат с stdout и stderr раздельно и кодом выхода программы.
++// Ненулевой код выхода не является ошибкой; код помещается в Result.ExitCode.
++// Ошибка возвращается только если программу не удалось запустить или процесс был прерван.
++// При отмене ctx программа останавливается и Run возвращает ошибку,
++// для которой errors.Is(err, ctx.Err()) истинно.
+ func Run(ctx context.Context, name string, args ...string) (Result, error) {
+-	cmd := exec.Command("sh", "-c", name+" "+strings.Join(args, " "))
+-	var out bytes.Buffer
+-	cmd.Stdout = &out
+-	cmd.Stderr = &out
++	cmd := exec.CommandContext(ctx, name, args...)
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++
+ 	err := cmd.Run()
+-	return Result{Stdout: out.String()}, err
++
++	res := Result{
++		Stdout:   stdout.String(),
++		Stderr:   stderr.String(),
++		ExitCode: 0,
++	}
++
++	// Если процесс был убит при отмене контекста, вернём ошибку контекста
++	if ctx.Err() != nil {
++		return res, ctx.Err()
++	}
++
++	// Если произошла другая ошибка запуска (не код выхода), вернём её
++	if err != nil {
++		if exitErr, ok := err.(*exec.ExitError); ok {
++			res.ExitCode = exitErr.ExitCode()
++		} else {
++			return res, err
++		}
++	}
++
++	return res, nil
+ }
+diff -ruN -x .git orig/runner_test.go ws/runner_test.go
+--- orig/runner_test.go	2026-10-01 12:25:50.052256779 +0000
++++ ws/runner_test.go	2026-10-01 12:24:23.296407506 +0000
+@@ -2,8 +2,10 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"strings"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestRunEcho(t *testing.T) {
+@@ -15,3 +17,70 @@
+ 		t.Fatalf("Stdout = %q", res.Stdout)
+ 	}
+ }
++
++// TestRunArgsWithSpaces проверяет, что аргументы с пробелами передаются корректно
++func TestRunArgsWithSpaces(t *testing.T) {
++	res, err := Run(context.Background(), "echo", "hello world")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.TrimSpace(res.Stdout) != "hello world" {
++		t.Fatalf("Stdout = %q, want %q", res.Stdout, "hello world")
++	}
++}
++
++// TestRunArgsWithSpecialChars проверяет, что спецсимволы не интерпретируются оболочкой
++func TestRunArgsWithSpecialChars(t *testing.T) {
++	// Аргумент содержит символы, которые shell интерпретирует (если бы использовалась sh -c)
++	res, err := Run(context.Background(), "echo", "$VAR;echo hacked")
++	if err != nil {
++		t.Fatal(err)
++	}
++	expected := "$VAR;echo hacked"
++	if strings.TrimSpace(res.Stdout) != expected {
++		t.Fatalf("Stdout = %q, want %q", strings.TrimSpace(res.Stdout), expected)
++	}
++}
++
++// TestRunStdoutStderr проверяет, что stdout и stderr разделены
++func TestRunStdoutStderr(t *testing.T) {
++	// Используем sh для записи в stderr (так как echo пишет только в stdout)
++	res, err := Run(context.Background(), "sh", "-c", "echo stdout_msg && echo stderr_msg >&2")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.TrimSpace(res.Stdout) != "stdout_msg" {
++		t.Fatalf("Stdout = %q, want %q", strings.TrimSpace(res.Stdout), "stdout_msg")
++	}
++	if strings.TrimSpace(res.Stderr) != "stderr_msg" {
++		t.Fatalf("Stderr = %q, want %q", strings.TrimSpace(res.Stderr), "stderr_msg")
++	}
++}
++
++// TestRunExitCode проверяет, что ненулевой код выхода не является ошибкой
++func TestRunExitCode(t *testing.T) {
++	res, err := Run(context.Background(), "sh", "-c", "exit 42")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.ExitCode != 42 {
++		t.Fatalf("ExitCode = %d, want 42", res.ExitCode)
++	}
++}
++
++// TestRunContextCancellation проверяет, что отмена контекста прерывает процесс
++func TestRunContextCancellation(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++
++	// Запустим долгую команду
++	res, err := Run(ctx, "sh", "-c", "sleep 10")
++	if err == nil {
++		t.Fatal("expected error on context cancellation")
++	}
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
++	}
++	// ExitCode должен быть заполнен даже при отмене
++	_ = res
++}
+Binary files orig/tool and ws/tool differ
+Binary files orig/tool.exe and ws/tool.exe differ

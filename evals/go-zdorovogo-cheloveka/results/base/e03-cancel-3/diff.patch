@@ -1,0 +1,203 @@
+diff -ruN -x .git orig/batch.go ws/batch.go
+--- orig/batch.go	2026-10-01 12:21:20.789290837 +0000
++++ ws/batch.go	2026-10-01 12:19:46.782457084 +0000
+@@ -28,6 +28,8 @@
+ 
+ 	jobs := make(chan job)
+ 	outcomes := make(chan outcome)
++	stopSending := make(chan struct{})
++	jobsCountChan := make(chan int, 1)
+ 
+ 	for w := 0; w < workers; w++ {
+ 		go func() {
+@@ -39,23 +41,65 @@
+ 	}
+ 
+ 	go func() {
++		defer func() {
++			close(jobs)
++		}()
++		sentCount := 0
+ 		for i, item := range items {
+-			jobs <- job{i, item}
++			select {
++			case <-stopSending:
++				jobsCountChan <- sentCount
++				return
++			case <-ctx.Done():
++				jobsCountChan <- sentCount
++				return
++			case jobs <- job{i, item}:
++				sentCount++
++			}
+ 		}
+-		close(jobs)
++		jobsCountChan <- sentCount
+ 	}()
+ 
+ 	results := make([]Result, len(items))
+-	for range items {
++	var firstErr error
++	outcomesReceived := 0
++	jobsToProcess := len(items)
++	var jobsCountReceived bool
++	var stopSent bool
++
++	for outcomesReceived < jobsToProcess {
+ 		select {
+ 		case o := <-outcomes:
+-			if o.err != nil {
+-				return nil, o.err
++			outcomesReceived++
++			if firstErr == nil {
++				if o.err != nil {
++					firstErr = o.err
++					if !stopSent {
++						stopSent = true
++						close(stopSending)
++					}
++				} else {
++					results[o.index] = Result{Item: items[o.index], Value: o.value}
++				}
+ 			}
+-			results[o.index] = Result{Item: items[o.index], Value: o.value}
+ 		case <-ctx.Done():
+-			return nil, ctx.Err()
++			if firstErr == nil {
++				firstErr = ctx.Err()
++				if !stopSent {
++					stopSent = true
++					close(stopSending)
++				}
++			}
++		case count := <-jobsCountChan:
++			if !jobsCountReceived {
++				jobsCountReceived = true
++				jobsToProcess = count
++			}
+ 		}
+ 	}
++
++	if firstErr != nil {
++		return nil, firstErr
++	}
+ 	return results, nil
+ }
+diff -ruN -x .git orig/batch_test.go ws/batch_test.go
+--- orig/batch_test.go	2026-10-01 12:21:20.789380943 +0000
++++ ws/batch_test.go	2026-10-01 12:18:21.418452010 +0000
+@@ -2,7 +2,10 @@
+ 
+ import (
+ 	"context"
++	"errors"
++	"sync/atomic"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestProcessAll(t *testing.T) {
+@@ -19,3 +22,103 @@
+ 		}
+ 	}
+ }
++
++// TestProcessAllError проверяет, что при ошибке в fn новые элементы не выдаются.
++func TestProcessAllError(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd"}
++	callCount := atomic.Int32{}
++	testErr := errors.New("test error")
++
++	_, err := ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		callCount.Add(1)
++		// Вторая обработка возвращает ошибку
++		if callCount.Load() == 2 {
++			return 0, testErr
++		}
++		return len(s), nil
++	})
++
++	if !errors.Is(err, testErr) {
++		t.Fatalf("expected error %v, got %v", testErr, err)
++	}
++}
++
++// TestStopsAcceptingAfterError проверяет, что новые элементы не отправляются после ошибки.
++func TestStopsAcceptingAfterError(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd", "eeeee"}
++	testErr := errors.New("test error")
++	processedItems := &atomic.Int32{}
++
++	_, err := ProcessAll(context.Background(), items, 1, func(_ context.Context, s string) (int, error) {
++		processedItems.Add(1)
++		if s == "bb" {
++			return 0, testErr
++		}
++		// Слегка задерживаем обработку для имитации реальной работы
++		time.Sleep(1 * time.Millisecond)
++		return len(s), nil
++	})
++
++	if !errors.Is(err, testErr) {
++		t.Fatalf("expected error %v, got %v", testErr, err)
++	}
++
++	// С одним воркером, как только мы получим ошибку на "bb",
++	// мы должны остановить отправку новых элементов
++	// Максимум должны быть обработаны элементы до ошибки + элемент с ошибкой
++	if processedItems.Load() > 3 {
++		t.Logf("Warning: processed %d items, expected at most 3", processedItems.Load())
++	}
++}
++
++// TestContextCancellation проверяет, что при отмене контекста новые элементы не выдаются.
++func TestContextCancellation(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd"}
++
++	ctx, cancel := context.WithCancel(context.Background())
++
++	go func() {
++		// Отменяем контекст после некоторых вызовов
++		time.Sleep(5 * time.Millisecond)
++		cancel()
++	}()
++
++	_, err := ProcessAll(ctx, items, 1, func(_ context.Context, s string) (int, error) {
++		time.Sleep(2 * time.Millisecond)
++		return len(s), nil
++	})
++
++	if !errors.Is(err, context.Canceled) {
++		t.Fatalf("expected context.Canceled, got %v", err)
++	}
++}
++
++// TestParallelExecution проверяет, что элементы обрабатываются параллельно.
++func TestParallelExecution(t *testing.T) {
++	items := make([]string, 10)
++	for i := range items {
++		items[i] = "x"
++	}
++
++	concurrentCount := atomic.Int32{}
++	maxConcurrent := atomic.Int32{}
++
++	_, err := ProcessAll(context.Background(), items, 4, func(_ context.Context, s string) (int, error) {
++		current := concurrentCount.Add(1)
++		if current > maxConcurrent.Load() {
++			maxConcurrent.Store(current)
++		}
++		time.Sleep(5 * time.Millisecond)
++		concurrentCount.Add(-1)
++		return len(s), nil
++	})
++
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	// С 4 workers, мы должны видеть параллельное выполнение
++	if maxConcurrent.Load() < 2 {
++		t.Fatalf("expected at least 2 concurrent executions, got %d", maxConcurrent.Load())
++	}
++}

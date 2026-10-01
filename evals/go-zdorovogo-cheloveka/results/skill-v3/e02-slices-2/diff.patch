@@ -1,0 +1,44 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 12:36:40.845898741 +0000
++++ ws/cmdargs.go	2026-10-01 12:35:57.282514774 +0000
+@@ -4,13 +4,15 @@
+ // Build возвращает base, за которыми следуют extra.
+ // base не изменяется.
+ func Build(base []string, extra ...string) []string {
+-	return append(base, extra...)
++	result := make([]string, len(base), len(base)+len(extra))
++	copy(result, base)
++	return append(result, extra...)
+ }
+ 
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+ // args не изменяется.
+ func WithoutEmpty(args []string) []string {
+-	out := args[:0]
++	out := make([]string, 0, len(args))
+ 	for _, a := range args {
+ 		if a != "" {
+ 			out = append(out, a)
+diff -ruN -x .git orig/cmdargs_test.go ws/cmdargs_test.go
+--- orig/cmdargs_test.go	2026-10-01 12:36:40.845943617 +0000
++++ ws/cmdargs_test.go	2026-10-01 12:35:45.378514066 +0000
+@@ -20,3 +20,19 @@
+ 		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
+ 	}
+ }
++
++func TestProfileMultipleCommands(t *testing.T) {
++	p := NewProfile("--user-flag")
++	cmd1 := p.Command("run", "test1")
++	cmd2 := p.Command("build", "test2")
++
++	want1 := []string{"--quiet", "--color=never", "--user-flag", "run", "test1"}
++	want2 := []string{"--quiet", "--color=never", "--user-flag", "build", "test2"}
++
++	if !slices.Equal(cmd1, want1) {
++		t.Errorf("cmd1 = %q; want %q", cmd1, want1)
++	}
++	if !slices.Equal(cmd2, want2) {
++		t.Errorf("cmd2 = %q; want %q", cmd2, want2)
++	}
++}

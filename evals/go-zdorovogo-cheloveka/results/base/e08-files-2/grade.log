@@ -1,0 +1,14 @@
+ok   не изменён go.mod
+ok   gofmt
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+FAIL go test -race (с оценщиком)
+--- FAIL: TestGraderLongLines (0.01s)
+    zz_grader_test.go:58: CountMatches with 300 KiB lines: bufio.Scanner: token too long
+FAIL
+FAIL	example.com/logscan	0.862s
+FAIL
+info diff: 2 files changed, 67 insertions(+), 1 deletion(-)
+info новые файлы: stress_test.go 
+RESULT FAIL (1)

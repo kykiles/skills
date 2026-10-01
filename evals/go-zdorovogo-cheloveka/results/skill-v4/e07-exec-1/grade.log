@@ -1,0 +1,9 @@
+ok   не изменён go.mod
+ok   gofmt
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+ok   GOOS=windows go vet
+ok   go test -race (с оценщиком)
+info diff: 2 files changed, 67 insertions(+), 7 deletions(-)
+RESULT PASS

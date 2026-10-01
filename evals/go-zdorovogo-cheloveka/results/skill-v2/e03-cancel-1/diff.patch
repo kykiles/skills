@@ -1,0 +1,152 @@
+diff -ruN -x .git orig/batch.go ws/batch.go
+--- orig/batch.go	2026-10-01 12:32:29.760102144 +0000
++++ ws/batch.go	2026-10-01 12:30:49.310496467 +0000
+@@ -46,14 +46,24 @@
+ 	}()
+ 
+ 	results := make([]Result, len(items))
+-	for range items {
++	for i := 0; i < len(items); i++ {
+ 		select {
+ 		case o := <-outcomes:
+ 			if o.err != nil {
++				// Drain remaining outcomes to unblock workers.
++				// We've read outcome for iteration i, need to drain i+1 to len(items)-1.
++				for j := i + 1; j < len(items); j++ {
++					<-outcomes
++				}
+ 				return nil, o.err
+ 			}
+ 			results[o.index] = Result{Item: items[o.index], Value: o.value}
+ 		case <-ctx.Done():
++			// Drain remaining outcomes to unblock workers.
++			// We haven't read outcome for iteration i yet, need to drain i to len(items)-1.
++			for j := i; j < len(items); j++ {
++				<-outcomes
++			}
+ 			return nil, ctx.Err()
+ 		}
+ 	}
+diff -ruN -x .git orig/batch_test.go ws/batch_test.go
+--- orig/batch_test.go	2026-10-01 12:32:29.760120626 +0000
++++ ws/batch_test.go	2026-10-01 12:31:17.922498168 +0000
+@@ -2,7 +2,12 @@
+ 
+ import (
+ 	"context"
++	"errors"
++	"runtime"
++	"sync"
++	"sync/atomic"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestProcessAll(t *testing.T) {
+@@ -19,3 +24,106 @@
+ 		}
+ 	}
+ }
++
++// TestProcessAllErrorStopsProcessing verifies that when fn returns an error,
++// ProcessAll stops processing and doesn't return partial results.
++func TestProcessAllErrorStopsProcessing(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd"}
++	errMsg := errors.New("test error")
++	var callCount atomic.Int32
++
++	_, err := ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		callCount.Add(1)
++		if callCount.Load() == 2 {
++			return 0, errMsg
++		}
++		return len(s), nil
++	})
++
++	if err != errMsg {
++		t.Fatalf("expected error %v, got %v", errMsg, err)
++	}
++}
++
++// TestProcessAllNoGoroutineLeakOnError checks that goroutines don't leak
++// after an error occurs. We count goroutines before and after.
++func TestProcessAllNoGoroutineLeakOnError(t *testing.T) {
++	items := make([]string, 10)
++	for i := range items {
++		items[i] = "x"
++	}
++
++	errMsg := errors.New("test error")
++	var callCount atomic.Int32
++
++	goroutinesBefore := runtime.NumGoroutine()
++
++	_, err := ProcessAll(context.Background(), items, 3, func(_ context.Context, _ string) (int, error) {
++		callCount.Add(1)
++		if callCount.Load() == 2 {
++			return 0, errMsg
++		}
++		return 1, nil
++	})
++
++	if err != errMsg {
++		t.Fatalf("expected error %v, got %v", errMsg, err)
++	}
++
++	// Give goroutines a moment to clean up
++	time.Sleep(100 * time.Millisecond)
++
++	goroutinesAfter := runtime.NumGoroutine()
++
++	if goroutinesAfter > goroutinesBefore {
++		t.Fatalf("goroutine leak detected: before=%d, after=%d", goroutinesBefore, goroutinesAfter)
++	}
++}
++
++// TestProcessAllNoGoroutineLeakOnCancel checks that goroutines don't leak
++// when context is cancelled.
++func TestProcessAllNoGoroutineLeakOnCancel(t *testing.T) {
++	items := make([]string, 10)
++	for i := range items {
++		items[i] = "x"
++	}
++
++	goroutinesBefore := runtime.NumGoroutine()
++
++	ctx, cancel := context.WithCancel(context.Background())
++	var callCount atomic.Int32
++	var mu sync.Mutex
++	cancelled := false
++
++	_, err := ProcessAll(ctx, items, 3, func(ctx context.Context, _ string) (int, error) {
++		callCount.Add(1)
++		if callCount.Load() == 2 {
++			mu.Lock()
++			if !cancelled {
++				cancel()
++				cancelled = true
++			}
++			mu.Unlock()
++		}
++		// Check for cancellation
++		select {
++		case <-ctx.Done():
++			return 0, ctx.Err()
++		default:
++		}
++		return 1, nil
++	})
++
++	if err != context.Canceled {
++		t.Fatalf("expected context.Canceled, got %v", err)
++	}
++
++	// Give goroutines a moment to clean up
++	time.Sleep(500 * time.Millisecond)
++
++	goroutinesAfter := runtime.NumGoroutine()
++
++	if goroutinesAfter > goroutinesBefore {
++		t.Fatalf("goroutine leak detected: before=%d, after=%d", goroutinesBefore, goroutinesAfter)
++	}
++}

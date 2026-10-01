@@ -1,0 +1,13 @@
+ok   не изменён go.mod
+ok   gofmt
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+FAIL go test -race (с оценщиком)
+--- FAIL: TestGraderValidationErrorIsDistinguishable (0.00s)
+    zz_grader_test.go:62: {"port": 0}: cfg = &{Addr:127.0.0.1 Port:0 LogLevel:info}; want nil on error (documented contract)
+FAIL
+FAIL	example.com/svcconfig	0.019s
+FAIL
+info diff: 1 file changed, 3 insertions(+), 3 deletions(-)
+RESULT FAIL (1)

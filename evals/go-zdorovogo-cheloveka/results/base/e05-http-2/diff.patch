@@ -1,0 +1,148 @@
+diff -ruN -x .git orig/CHANGES.md ws/CHANGES.md
+--- orig/CHANGES.md	1970-01-01 00:00:00.000000000 +0000
++++ ws/CHANGES.md	2026-10-01 12:11:25.105510370 +0000
+@@ -0,0 +1,33 @@
++# Изменения в statusapi
++
++## Проблемы
++1. GetStatus не реагирует на отмену контекста
++2. На несуществующую задачу возвращает пустой статус без ошибки
++3. Под нагрузкой копятся открытые соединения
++
++## Решение в client.go
++
++### Исправление 1: Поддержка отмены контекста
++- Заменена прямая вызов `httpClient().Get()` на создание request через `http.NewRequestWithContext(ctx, ...)`
++- Используется `httpClient().Do(req)` вместо `Get()` для передачи контекста
++
++### Исправление 2: Обработка HTTP-статусов
++- Добавлена проверка `resp.StatusCode` перед чтением тела ответа
++- Реализована switch-statement:
++  - `http.StatusOK (200)` - успешно, парсим JSON
++  - `http.StatusNotFound (404)` - возвращаем `ErrNotFound` как по контракту
++  - Остальные коды - возвращаем `*StatusError` как по контракту
++
++### Исправление 3: Закрытие соединений
++- Добавлена `defer resp.Body.Close()` для гарантированного закрытия потока тела ответа
++
++## Тесты
++Добавлены комплексные тесты в client_test.go:
++- TestGetStatus_NotFound: проверяет возврат ErrNotFound на 404
++- TestGetStatus_OtherError: проверяет возврат *StatusError на другие ошибки
++- TestGetStatus_ContextCancellation: проверяет отмену при timeout контекста
++
++## Результаты проверок
++- `go test -v`: все 4 теста PASSED
++- `go vet`: без ошибок
++- `gofmt`: форматирование корректно
+diff -ruN -x .git orig/client.go ws/client.go
+--- orig/client.go	2026-10-01 12:21:10.863463967 +0000
++++ ws/client.go	2026-10-01 12:10:50.690425217 +0000
+@@ -45,13 +45,26 @@
+ // Для ответа 404 возвращает ErrNotFound, для остальных статусов, кроме 200, —
+ // *StatusError. Учитывает отмену и дедлайн ctx.
+ func (c *Client) GetStatus(ctx context.Context, id string) (Status, error) {
+-	resp, err := c.httpClient().Get(c.BaseURL + "/v1/status/" + url.PathEscape(id))
++	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+"/v1/status/"+url.PathEscape(id), nil)
+ 	if err != nil {
+ 		return Status{}, err
+ 	}
+-	var st Status
+-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+-		return Status{}, fmt.Errorf("statusapi: разбор ответа: %w", err)
++	resp, err := c.httpClient().Do(req)
++	if err != nil {
++		return Status{}, err
++	}
++	defer resp.Body.Close()
++
++	switch resp.StatusCode {
++	case http.StatusOK:
++		var st Status
++		if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
++			return Status{}, fmt.Errorf("statusapi: разбор ответа: %w", err)
++		}
++		return st, nil
++	case http.StatusNotFound:
++		return Status{}, ErrNotFound
++	default:
++		return Status{}, &StatusError{Code: resp.StatusCode}
+ 	}
+-	return st, nil
+ }
+diff -ruN -x .git orig/client_test.go ws/client_test.go
+--- orig/client_test.go	2026-10-01 12:21:10.863532379 +0000
++++ ws/client_test.go	2026-10-01 12:11:05.930426123 +0000
+@@ -2,9 +2,11 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestGetStatus(t *testing.T) {
+@@ -22,3 +24,60 @@
+ 		t.Fatalf("GetStatus = %+v", st)
+ 	}
+ }
++
++func TestGetStatus_NotFound(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusNotFound)
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(context.Background(), "nonexistent")
++	if err == nil {
++		t.Fatal("expected error for 404, got nil")
++	}
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("expected ErrNotFound, got %v", err)
++	}
++}
++
++func TestGetStatus_OtherError(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusInternalServerError)
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(context.Background(), "42")
++	if err == nil {
++		t.Fatal("expected error for 500, got nil")
++	}
++	var statusErr *StatusError
++	if !errors.As(err, &statusErr) {
++		t.Fatalf("expected *StatusError, got %v", err)
++	}
++	if statusErr.Code != http.StatusInternalServerError {
++		t.Fatalf("expected code 500, got %d", statusErr.Code)
++	}
++}
++
++func TestGetStatus_ContextCancellation(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		// Simulate slow server
++		time.Sleep(100 * time.Millisecond)
++		w.Write([]byte(`{"id":"42","state":"done"}`))
++	}))
++	defer srv.Close()
++
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
++	defer cancel()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(ctx, "42")
++	if err == nil {
++		t.Fatal("expected context timeout error, got nil")
++	}
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("expected context.DeadlineExceeded, got %v", err)
++	}
++}

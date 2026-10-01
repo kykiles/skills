@@ -1,0 +1,51 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 12:21:02.673718267 +0000
++++ ws/cmdargs.go	2026-10-01 12:11:03.890426002 +0000
+@@ -4,13 +4,16 @@
+ // Build возвращает base, за которыми следуют extra.
+ // base не изменяется.
+ func Build(base []string, extra ...string) []string {
+-	return append(base, extra...)
++	result := make([]string, len(base)+len(extra))
++	copy(result, base)
++	copy(result[len(base):], extra)
++	return result
+ }
+ 
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+ // args не изменяется.
+ func WithoutEmpty(args []string) []string {
+-	out := args[:0]
++	out := make([]string, 0, len(args))
+ 	for _, a := range args {
+ 		if a != "" {
+ 			out = append(out, a)
+diff -ruN -x .git orig/cmdargs_test.go ws/cmdargs_test.go
+--- orig/cmdargs_test.go	2026-10-01 12:21:02.673954110 +0000
++++ ws/cmdargs_test.go	2026-10-01 12:11:22.590427113 +0000
+@@ -20,3 +20,25 @@
+ 		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
+ 	}
+ }
++
++// Test reproducing the bug where multiple commands share arguments
++func TestProfileMultipleCommands(t *testing.T) {
++	profile := NewProfile()
++
++	// Build arguments for first command
++	cmd1Args := profile.Command("run", "first")
++
++	// Build arguments for second command
++	cmd2Args := profile.Command("run", "second")
++
++	// cmd1Args should have "first", not "second"
++	want1 := []string{"--quiet", "--color=never", "run", "first"}
++	want2 := []string{"--quiet", "--color=never", "run", "second"}
++
++	if !slices.Equal(cmd1Args, want1) {
++		t.Fatalf("cmd1Args = %q; want %q", cmd1Args, want1)
++	}
++	if !slices.Equal(cmd2Args, want2) {
++		t.Fatalf("cmd2Args = %q; want %q", cmd2Args, want2)
++	}
++}

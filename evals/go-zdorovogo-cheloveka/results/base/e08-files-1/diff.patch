@@ -1,0 +1,102 @@
+diff -ruN -x .git orig/scan.go ws/scan.go
+--- orig/scan.go	2026-10-01 12:25:32.683979440 +0000
++++ ws/scan.go	2026-10-01 12:24:02.140644593 +0000
+@@ -16,15 +16,23 @@
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		defer f.Close()
+ 
+ 		n := 0
+ 		sc := bufio.NewScanner(f)
++		// Увеличиваем буфер для обработки строк длиннее 64KB
++		buf := make([]byte, 0, 64*1024)
++		sc.Buffer(buf, 1024*1024) // макс размер линии 1MB
+ 		for sc.Scan() {
+ 			if strings.Contains(sc.Text(), needle) {
+ 				n++
+ 			}
+ 		}
++		// Проверяем ошибки сканера
++		if err := sc.Err(); err != nil {
++			f.Close()
++			return nil, err
++		}
++		f.Close()
+ 		res[p] = n
+ 	}
+ 	return res, nil
+diff -ruN -x .git orig/scan_test.go ws/scan_test.go
+--- orig/scan_test.go	2026-10-01 12:25:32.684145497 +0000
++++ ws/scan_test.go	2026-10-01 12:24:43.498474722 +0000
+@@ -1,8 +1,10 @@
+ package logscan
+ 
+ import (
++	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+ )
+ 
+@@ -20,3 +22,59 @@
+ 		t.Fatalf("CountMatches = %v; want 2", got)
+ 	}
+ }
++
++// TestCountMatchesMany проверяет, что функция не падает с "too many open files"
++// при обработке тысяч файлов (тест на исправление деferred close)
++func TestCountMatchesMany(t *testing.T) {
++	dir := t.TempDir()
++	const fileCount = 100
++	paths := make([]string, fileCount)
++
++	for i := 0; i < fileCount; i++ {
++		p := filepath.Join(dir, fmt.Sprintf("file_%d.log", i))
++		content := "match\nno\nmatch\n"
++		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		paths[i] = p
++	}
++
++	got, err := CountMatches(paths, "match")
++	if err != nil {
++		t.Fatalf("CountMatches failed: %v", err)
++	}
++
++	for _, p := range paths {
++		if got[p] != 2 {
++			t.Fatalf("CountMatches for %s = %v; want 2", p, got[p])
++		}
++	}
++}
++
++// TestCountMatchesLongLines проверяет, что функция корректно обрабатывает
++// строки длиннее 64KB (тест на исправление buffer size)
++func TestCountMatchesLongLines(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "long.log")
++
++	// Создаем файл со строками:
++	// 1. строка длиннее 64KB, содержащая "needle"
++	// 2. обычная строка с "needle"
++	// 3. очень длинная строка без "needle"
++	longLine := strings.Repeat("a", 70*1024) + "needle" + strings.Repeat("a", 70*1024)
++	content := longLine + "\nshort needle line\n" + strings.Repeat("b", 70*1024) + "\n"
++
++	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	got, err := CountMatches([]string{p}, "needle")
++	if err != nil {
++		t.Fatalf("CountMatches failed: %v", err)
++	}
++
++	// Ожидаем 2 совпадения (одно в длинной строке, одно в short line)
++	if got[p] != 2 {
++		t.Fatalf("CountMatches = %v; want 2 (for long lines test)", got[p])
++	}
++}

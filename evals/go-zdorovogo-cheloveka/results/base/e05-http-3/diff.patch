@@ -1,0 +1,141 @@
+diff -ruN -x .git orig/client.go ws/client.go
+--- orig/client.go	2026-10-01 12:21:25.008217353 +0000
++++ ws/client.go	2026-10-01 12:14:04.794436755 +0000
+@@ -45,10 +45,24 @@
+ // Для ответа 404 возвращает ErrNotFound, для остальных статусов, кроме 200, —
+ // *StatusError. Учитывает отмену и дедлайн ctx.
+ func (c *Client) GetStatus(ctx context.Context, id string) (Status, error) {
+-	resp, err := c.httpClient().Get(c.BaseURL + "/v1/status/" + url.PathEscape(id))
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/v1/status/"+url.PathEscape(id), nil)
+ 	if err != nil {
+ 		return Status{}, err
+ 	}
++	resp, err := c.httpClient().Do(req)
++	if err != nil {
++		return Status{}, err
++	}
++	defer resp.Body.Close()
++
++	// Проверяем HTTP-статус
++	if resp.StatusCode == http.StatusNotFound {
++		return Status{}, ErrNotFound
++	}
++	if resp.StatusCode != http.StatusOK {
++		return Status{}, &StatusError{Code: resp.StatusCode}
++	}
++
+ 	var st Status
+ 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+ 		return Status{}, fmt.Errorf("statusapi: разбор ответа: %w", err)
+diff -ruN -x .git orig/client_test.go ws/client_test.go
+--- orig/client_test.go	2026-10-01 12:21:25.008337551 +0000
++++ ws/client_test.go	2026-10-01 12:14:28.786438182 +0000
+@@ -2,9 +2,11 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestGetStatus(t *testing.T) {
+@@ -22,3 +24,96 @@
+ 		t.Fatalf("GetStatus = %+v", st)
+ 	}
+ }
++
++// TestGetStatusContextCancellation проверяет, что GetStatus уважает отмену контекста.
++func TestGetStatusContextCancellation(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		// Имитируем долгий ответ
++		time.Sleep(100 * time.Millisecond)
++		w.Write([]byte(`{"id":"42","state":"done"}`))
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
++	defer cancel()
++
++	_, err := c.GetStatus(ctx, "42")
++	if err == nil {
++		t.Fatal("ожидаю ошибку от контекста")
++	}
++	// Проверяем, что это ошибка отмены контекста
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("ожидаю context.DeadlineExceeded, получил %v", err)
++	}
++}
++
++// TestGetStatusNotFound проверяет, что 404 возвращает ErrNotFound.
++func TestGetStatusNotFound(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusNotFound)
++		w.Write([]byte(`{"error":"не найдено"}`))
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	_, err := c.GetStatus(context.Background(), "nonexistent")
++	if err == nil {
++		t.Fatal("ожидаю ошибку ErrNotFound")
++	}
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("ожидаю ErrNotFound, получил %v", err)
++	}
++}
++
++// TestGetStatusError проверяет, что другие статусы ошибок возвращают *StatusError.
++func TestGetStatusError(t *testing.T) {
++	tests := []int{
++		http.StatusInternalServerError,
++		http.StatusBadRequest,
++		http.StatusForbidden,
++		http.StatusServiceUnavailable,
++	}
++
++	for _, statusCode := range tests {
++		t.Run(http.StatusText(statusCode), func(t *testing.T) {
++			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				w.WriteHeader(statusCode)
++				w.Write([]byte(`{"error":"ошибка"}`))
++			}))
++			defer srv.Close()
++
++			c := &Client{BaseURL: srv.URL}
++			_, err := c.GetStatus(context.Background(), "42")
++			if err == nil {
++				t.Fatal("ожидаю ошибку StatusError")
++			}
++			var statusErr *StatusError
++			if !errors.As(err, &statusErr) {
++				t.Fatalf("ожидаю *StatusError, получил %v", err)
++			}
++			if statusErr.Code != statusCode {
++				t.Fatalf("ожидаю код %d, получил %d", statusCode, statusErr.Code)
++			}
++		})
++	}
++}
++
++// TestGetStatusBodyClosed проверяет, что тело ответа закрывается (предотвращение утечек соединений).
++func TestGetStatusBodyClosed(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.Write([]byte(`{"id":"42","state":"done"}`))
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	// Выполняем много запросов подряд
++	for i := 0; i < 100; i++ {
++		_, err := c.GetStatus(context.Background(), "42")
++		if err != nil {
++			t.Fatalf("итерация %d: %v", i, err)
++		}
++	}
++	// Если соединения не закрывались, мы бы получили ошибку «too many open files»
++	// или другую ошибку о ресурсах. Успешное выполнение означает, что тела закрывались.
++}

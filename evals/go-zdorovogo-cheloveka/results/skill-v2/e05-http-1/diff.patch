@@ -1,0 +1,120 @@
+diff -ruN -x .git orig/client.go ws/client.go
+--- orig/client.go	2026-10-01 12:29:30.178819169 +0000
++++ ws/client.go	2026-10-01 12:28:26.334487968 +0000
+@@ -6,6 +6,7 @@
+ 	"encoding/json"
+ 	"errors"
+ 	"fmt"
++	"io"
+ 	"net/http"
+ 	"net/url"
+ )
+@@ -45,10 +46,27 @@
+ // Для ответа 404 возвращает ErrNotFound, для остальных статусов, кроме 200, —
+ // *StatusError. Учитывает отмену и дедлайн ctx.
+ func (c *Client) GetStatus(ctx context.Context, id string) (Status, error) {
+-	resp, err := c.httpClient().Get(c.BaseURL + "/v1/status/" + url.PathEscape(id))
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/v1/status/"+url.PathEscape(id), nil)
+ 	if err != nil {
+ 		return Status{}, err
+ 	}
++	resp, err := c.httpClient().Do(req)
++	if err != nil {
++		return Status{}, err
++	}
++	defer resp.Body.Close()
++
++	if resp.StatusCode == http.StatusNotFound {
++		// Дочитываем немного тела, чтобы соединение могло вернуться в пул.
++		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
++		return Status{}, ErrNotFound
++	}
++	if resp.StatusCode != http.StatusOK {
++		// Дочитываем немного тела, чтобы соединение могло вернуться в пул.
++		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
++		return Status{}, &StatusError{Code: resp.StatusCode}
++	}
++
+ 	var st Status
+ 	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+ 		return Status{}, fmt.Errorf("statusapi: разбор ответа: %w", err)
+diff -ruN -x .git orig/client_test.go ws/client_test.go
+--- orig/client_test.go	2026-10-01 12:29:30.178840466 +0000
++++ ws/client_test.go	2026-10-01 12:28:37.330488621 +0000
+@@ -2,9 +2,11 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestGetStatus(t *testing.T) {
+@@ -22,3 +24,64 @@
+ 		t.Fatalf("GetStatus = %+v", st)
+ 	}
+ }
++
++func TestGetStatusNotFound(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusNotFound)
++		w.Write([]byte(`{"error":"not found"}`))
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	st, err := c.GetStatus(context.Background(), "nonexistent")
++	if !errors.Is(err, ErrNotFound) {
++		t.Fatalf("GetStatus for 404: want ErrNotFound, got %v", err)
++	}
++	if st != (Status{}) {
++		t.Fatalf("GetStatus for 404: want zero Status, got %+v", st)
++	}
++}
++
++func TestGetStatusError(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusInternalServerError)
++		w.Write([]byte(`{"error":"internal error"}`))
++	}))
++	defer srv.Close()
++
++	c := &Client{BaseURL: srv.URL}
++	st, err := c.GetStatus(context.Background(), "42")
++
++	var se *StatusError
++	if !errors.As(err, &se) {
++		t.Fatalf("GetStatus for 500: want *StatusError, got %v", err)
++	}
++	if se.Code != http.StatusInternalServerError {
++		t.Fatalf("StatusError.Code: want %d, got %d", http.StatusInternalServerError, se.Code)
++	}
++	if st != (Status{}) {
++		t.Fatalf("GetStatus for 500: want zero Status, got %+v", st)
++	}
++}
++
++func TestGetStatusContextCancellation(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		// Simulate slow response
++		time.Sleep(100 * time.Millisecond)
++		w.Write([]byte(`{"id":"42","state":"done"}`))
++	}))
++	defer srv.Close()
++
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
++	defer cancel()
++
++	c := &Client{BaseURL: srv.URL}
++	st, err := c.GetStatus(ctx, "42")
++
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("GetStatus with deadline: want context.DeadlineExceeded, got %v", err)
++	}
++	if st != (Status{}) {
++		t.Fatalf("GetStatus with deadline: want zero Status, got %+v", st)
++	}
++}

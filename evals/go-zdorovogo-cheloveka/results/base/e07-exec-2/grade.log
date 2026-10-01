@@ -1,0 +1,10 @@
+ok   не изменён go.mod
+FAIL gofmt: runner.go
+FAIL посторонние файлы: coverage.out stderr.txt tool 
+ok   go build
+ok   go vet
+ok   GOOS=windows go vet
+ok   go test -race (с оценщиком)
+info diff: 2 files changed, 132 insertions(+), 6 deletions(-)
+info новые файлы: coverage.out stderr.txt tool 
+RESULT FAIL (2)

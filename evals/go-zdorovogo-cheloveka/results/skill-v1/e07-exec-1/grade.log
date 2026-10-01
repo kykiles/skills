@@ -1,0 +1,10 @@
+ok   не изменён go.mod
+ok   gofmt
+FAIL посторонние файлы: tool tool.exe 
+ok   go build
+ok   go vet
+ok   GOOS=windows go vet
+ok   go test -race (с оценщиком)
+info diff: 2 files changed, 102 insertions(+), 6 deletions(-)
+info новые файлы: tool tool.exe 
+RESULT FAIL (1)

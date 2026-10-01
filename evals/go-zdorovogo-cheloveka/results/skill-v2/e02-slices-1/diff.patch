@@ -1,0 +1,52 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 12:29:48.151966387 +0000
++++ ws/cmdargs.go	2026-10-01 12:28:49.574489349 +0000
+@@ -4,13 +4,15 @@
+ // Build возвращает base, за которыми следуют extra.
+ // base не изменяется.
+ func Build(base []string, extra ...string) []string {
+-	return append(base, extra...)
++	result := make([]string, len(base), len(base)+len(extra))
++	copy(result, base)
++	return append(result, extra...)
+ }
+ 
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+ // args не изменяется.
+ func WithoutEmpty(args []string) []string {
+-	out := args[:0]
++	out := make([]string, 0, len(args))
+ 	for _, a := range args {
+ 		if a != "" {
+ 			out = append(out, a)
+diff -ruN -x .git orig/cmdargs_issue_test.go ws/cmdargs_issue_test.go
+--- orig/cmdargs_issue_test.go	1970-01-01 00:00:00.000000000 +0000
++++ ws/cmdargs_issue_test.go	2026-10-01 12:28:34.430488449 +0000
+@@ -0,0 +1,27 @@
++package cmdargs
++
++import (
++	"slices"
++	"testing"
++)
++
++// TestCommandInterference reproduces the issue: when building multiple commands
++// from the same profile, they should have independent argument lists
++func TestCommandInterference(t *testing.T) {
++	profile := NewProfile()
++	
++	// Build both commands without running them yet
++	cmd1Args := profile.Command("run", "x")
++	cmd2Args := profile.Command("test", "y")
++	
++	// Each command should have its own arguments
++	want1 := []string{"--quiet", "--color=never", "run", "x"}
++	want2 := []string{"--quiet", "--color=never", "test", "y"}
++	
++	if !slices.Equal(cmd1Args, want1) {
++		t.Errorf("cmd1Args = %q; want %q", cmd1Args, want1)
++	}
++	if !slices.Equal(cmd2Args, want2) {
++		t.Errorf("cmd2Args = %q; want %q", cmd2Args, want2)
++	}
++}

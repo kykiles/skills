@@ -1,0 +1,87 @@
+diff -ruN -x .git orig/cache.go ws/cache.go
+--- orig/cache.go	2026-10-01 12:36:51.905072028 +0000
++++ ws/cache.go	2026-10-01 12:35:54.154514588 +0000
+@@ -33,6 +33,8 @@
+ 
+ // Get возвращает значение, если оно есть и не устарело.
+ func (c *Cache) Get(key string) (string, bool) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
+ 	e, ok := c.items[key]
+ 	if !ok || time.Now().After(e.expires) {
+ 		return "", false
+@@ -41,7 +43,7 @@
+ }
+ 
+ // Len возвращает число записей, включая устаревшие, но ещё не удалённые.
+-func (c Cache) Len() int {
++func (c *Cache) Len() int {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()
+ 	return len(c.items)
+diff -ruN -x .git orig/cache_test.go ws/cache_test.go
+--- orig/cache_test.go	2026-10-01 12:36:51.905126665 +0000
++++ ws/cache_test.go	2026-10-01 12:36:03.154515123 +0000
+@@ -1,6 +1,7 @@
+ package ttlcache
+ 
+ import (
++	"sync"
+ 	"testing"
+ 	"time"
+ )
+@@ -15,3 +16,54 @@
+ 		t.Fatal("Get(b) found missing key")
+ 	}
+ }
++
++// TestConcurrentAccess проверяет, что кэш безопасен при одновременном доступе.
++func TestConcurrentAccess(t *testing.T) {
++	c := New(time.Minute)
++	var wg sync.WaitGroup
++
++	// Горутины, которые пишут в кэш
++	for i := 0; i < 5; i++ {
++		wg.Add(1)
++		go func(idx int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Set("key", "value")
++			}
++		}(i)
++	}
++
++	// Горутины, которые читают из кэша
++	for i := 0; i < 5; i++ {
++		wg.Add(1)
++		go func(idx int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Get("key")
++			}
++		}(i)
++	}
++
++	// Горутины, которые вызывают Len
++	for i := 0; i < 5; i++ {
++		wg.Add(1)
++		go func(idx int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Len()
++			}
++		}(i)
++	}
++
++	// Горутина cleanup
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		c.Set("cleanup-test", "value")
++		stop := c.StartCleanup(10 * time.Millisecond)
++		time.Sleep(100 * time.Millisecond)
++		stop()
++	}()
++
++	wg.Wait()
++}

@@ -1,0 +1,141 @@
+diff -ruN -x .git orig/runner.go ws/runner.go
+--- orig/runner.go	2026-10-01 12:29:50.871376839 +0000
++++ ws/runner.go	2026-10-01 12:28:24.958487886 +0000
+@@ -4,8 +4,8 @@
+ import (
+ 	"bytes"
+ 	"context"
++	"errors"
+ 	"os/exec"
+-	"strings"
+ )
+ 
+ // Result — итог работы программы.
+@@ -16,11 +16,38 @@
+ }
+ 
+ // Run запускает программу name с аргументами args и ждёт её завершения.
++// Ненулевой код выхода помещается в Result.ExitCode и не считается ошибкой;
++// ошибка возвращается только если программу не удалось запустить или её прервали контекстом.
++// При отмене контекста Run останавливает программу и возвращает ошибку, для которой errors.Is(err, ctx.Err()) истинно.
++// Аргументы передаются программе как есть, без интерпретации скорлупой.
+ func Run(ctx context.Context, name string, args ...string) (Result, error) {
+-	cmd := exec.Command("sh", "-c", name+" "+strings.Join(args, " "))
+-	var out bytes.Buffer
+-	cmd.Stdout = &out
+-	cmd.Stderr = &out
++	cmd := exec.CommandContext(ctx, name, args...)
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
+ 	err := cmd.Run()
+-	return Result{Stdout: out.String()}, err
++
++	result := Result{
++		Stdout: stdout.String(),
++		Stderr: stderr.String(),
++	}
++
++	// Если контекст отменён, вернуть его ошибку
++	if ctxErr := ctx.Err(); ctxErr != nil {
++		return result, ctxErr
++	}
++
++	// Если процесс завершился с ненулевым кодом, извлечь и сохранить код
++	var exitErr *exec.ExitError
++	if errors.As(err, &exitErr) {
++		result.ExitCode = exitErr.ExitCode()
++		return result, nil
++	}
++
++	// Если другая ошибка (например, программу не нашли), вернуть её
++	if err != nil {
++		return result, err
++	}
++
++	return result, nil
+ }
+diff -ruN -x .git orig/runner_test.go ws/runner_test.go
+--- orig/runner_test.go	2026-10-01 12:29:50.871439271 +0000
++++ ws/runner_test.go	2026-10-01 12:28:59.194489921 +0000
+@@ -2,8 +2,10 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"strings"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestRunEcho(t *testing.T) {
+@@ -15,3 +17,69 @@
+ 		t.Fatalf("Stdout = %q", res.Stdout)
+ 	}
+ }
++
++func TestRunArgumentsPreserved(t *testing.T) {
++	// Аргументы с пробелами, кавычками и спецсимволами должны доходить как есть
++	res, err := Run(context.Background(), "echo", "hello world", "with;semicolon", "with$dollar")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(res.Stdout, "hello world") {
++		t.Fatalf("Arguments not preserved: got %q", res.Stdout)
++	}
++}
++
++func TestRunSeparateStderr(t *testing.T) {
++	// stdout и stderr должны быть отдельно
++	// На POSIX-системах "echo" выводит в stdout, ">&2" перенаправляет в stderr
++	res, err := Run(context.Background(), "sh", "-c", "echo stdout; echo stderr >&2")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if !strings.Contains(res.Stdout, "stdout") {
++		t.Fatalf("Stdout missing: got %q", res.Stdout)
++	}
++	if !strings.Contains(res.Stderr, "stderr") {
++		t.Fatalf("Stderr missing: got %q", res.Stderr)
++	}
++}
++
++func TestRunExitCode(t *testing.T) {
++	// Ненулевой код выхода не ошибка
++	res, err := Run(context.Background(), "sh", "-c", "exit 42")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.ExitCode != 42 {
++		t.Fatalf("ExitCode = %d, want 42", res.ExitCode)
++	}
++}
++
++func TestRunContextCancellation(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++
++	res, err := Run(ctx, "sleep", "10")
++	if err == nil {
++		t.Fatal("Expected error due to context cancellation")
++	}
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("Expected context.DeadlineExceeded, got %v", err)
++	}
++	// Результат должен быть частично заполнен
++	if res.Stdout != "" && res.Stderr != "" {
++		t.Logf("Result was partially filled (OK): stdout=%q, stderr=%q", res.Stdout, res.Stderr)
++	}
++}
++
++func TestRunNotFound(t *testing.T) {
++	// Если программу не нашли - ошибка
++	res, err := Run(context.Background(), "nonexistent_program_12345", "arg")
++	if err == nil {
++		t.Fatal("Expected error for nonexistent program")
++	}
++	// ExitCode не должен быть установлен при ошибке запуска
++	if res.ExitCode != 0 {
++		t.Logf("ExitCode = %d (may vary by platform)", res.ExitCode)
++	}
++}

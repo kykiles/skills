@@ -1,0 +1,42 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 12:25:07.928555891 +0000
++++ ws/cmdargs.go	2026-10-01 12:24:18.846473256 +0000
+@@ -10,7 +10,7 @@
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+ // args не изменяется.
+ func WithoutEmpty(args []string) []string {
+-	out := args[:0]
++	out := make([]string, 0, len(args))
+ 	for _, a := range args {
+ 		if a != "" {
+ 			out = append(out, a)
+diff -ruN -x .git orig/cmdargs_test.go ws/cmdargs_test.go
+--- orig/cmdargs_test.go	2026-10-01 12:25:07.929228116 +0000
++++ ws/cmdargs_test.go	2026-10-01 12:24:01.410472220 +0000
+@@ -20,3 +20,26 @@
+ 		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
+ 	}
+ }
++
++func TestProfileSharedUnderlying(t *testing.T) {
++	// Reproduce the bug: two commands using the same profile
++	// should have independent arguments, but they share the underlying array.
++	profile := NewProfile()
++
++	// Collect arguments for two commands in advance
++	cmd1Args := profile.Command("cmd1", "arg1")
++	cmd2Args := profile.Command("cmd2", "arg2")
++
++	// cmd1Args should be: --quiet, --color=never, cmd1, arg1
++	// cmd2Args should be: --quiet, --color=never, cmd2, arg2
++
++	wantCmd1 := []string{"--quiet", "--color=never", "cmd1", "arg1"}
++	wantCmd2 := []string{"--quiet", "--color=never", "cmd2", "arg2"}
++
++	if !slices.Equal(cmd1Args, wantCmd1) {
++		t.Errorf("cmd1Args = %q; want %q", cmd1Args, wantCmd1)
++	}
++	if !slices.Equal(cmd2Args, wantCmd2) {
++		t.Errorf("cmd2Args = %q; want %q", cmd2Args, wantCmd2)
++	}
++}

@@ -1,0 +1,103 @@
+diff -ruN -x .git orig/cache.go ws/cache.go
+--- orig/cache.go	2026-10-01 12:33:46.938511861 +0000
++++ ws/cache.go	2026-10-01 12:32:55.538503970 +0000
+@@ -33,6 +33,8 @@
+ 
+ // Get возвращает значение, если оно есть и не устарело.
+ func (c *Cache) Get(key string) (string, bool) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
+ 	e, ok := c.items[key]
+ 	if !ok || time.Now().After(e.expires) {
+ 		return "", false
+@@ -41,7 +43,7 @@
+ }
+ 
+ // Len возвращает число записей, включая устаревшие, но ещё не удалённые.
+-func (c Cache) Len() int {
++func (c *Cache) Len() int {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()
+ 	return len(c.items)
+diff -ruN -x .git orig/cache_test.go ws/cache_test.go
+--- orig/cache_test.go	2026-10-01 12:33:46.938843732 +0000
++++ ws/cache_test.go	2026-10-01 12:33:11.002504889 +0000
+@@ -1,6 +1,7 @@
+ package ttlcache
+ 
+ import (
++	"sync"
+ 	"testing"
+ 	"time"
+ )
+@@ -15,3 +16,70 @@
+ 		t.Fatal("Get(b) found missing key")
+ 	}
+ }
++
++func TestConcurrentAccess(t *testing.T) {
++	c := New(time.Minute)
++	var wg sync.WaitGroup
++
++	// Запускаем множество горутин, одновременно записывающих и читающих
++	for i := 0; i < 10; i++ {
++		wg.Add(3)
++
++		// Горутина, которая пишет
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Set("key", "value")
++			}
++		}(i)
++
++		// Горутина, которая читает
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Get("key")
++			}
++		}(i)
++
++		// Горутина, которая проверяет длину
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Len()
++			}
++		}(i)
++	}
++
++	wg.Wait()
++}
++
++func TestCleanupConcurrency(t *testing.T) {
++	c := New(time.Millisecond * 100)
++	stop := c.StartCleanup(time.Millisecond * 50)
++	defer stop()
++
++	var wg sync.WaitGroup
++
++	// Пишем и читаем пока идёт очистка
++	for i := 0; i < 5; i++ {
++		wg.Add(2)
++
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 50; j++ {
++				c.Set("key", "value")
++				time.Sleep(time.Millisecond)
++			}
++		}(i)
++
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 50; j++ {
++				c.Get("key")
++				time.Sleep(time.Millisecond)
++			}
++		}(i)
++	}
++
++	wg.Wait()
++}

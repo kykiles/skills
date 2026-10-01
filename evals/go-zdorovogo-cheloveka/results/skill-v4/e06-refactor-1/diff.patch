@@ -1,0 +1,134 @@
+diff -ruN -x .git orig/report.go ws/report.go
+--- orig/report.go	2026-10-01 14:24:25.441919749 +0000
++++ ws/report.go	2026-10-01 14:23:25.245040832 +0000
+@@ -37,83 +37,63 @@
+ 		}
+ 	}
+ 
+-	if len(critical) > 0 {
+-		b.WriteString("\n[" + Critical.String() + "]\n")
+-		var sources []string
+-		for s := range critical {
+-			sources = append(sources, s)
+-		}
+-		sort.Strings(sources)
+-		total := 0
+-		for _, s := range sources {
+-			n := 0
+-			var msgs []string
+-			seen := map[string]bool{}
+-			for _, e := range critical[s] {
+-				n += e.Count
+-				if !seen[e.Message] {
+-					seen[e.Message] = true
+-					msgs = append(msgs, e.Message)
+-				}
+-			}
+-			total += n
+-			b.WriteString(fmt.Sprintf("  %-12s %5d  %s\n", s, n, strings.Join(msgs, "; ")))
+-		}
+-		b.WriteString(fmt.Sprintf("  итого: %d\n", total))
++	// Форматируем секции уровней в порядке важности.
++	// Critical и Warning выводят сообщения, Info только их число.
++	b.WriteString(formatSection(Critical, critical, false))
++	b.WriteString(formatSection(Warning, warning, false))
++	b.WriteString(formatSection(Info, info, true))
++
++	all := 0
++	distinct := map[string]bool{}
++	for _, e := range entries {
++		all += e.Count
++		distinct[e.Source] = true
+ 	}
++	b.WriteString(fmt.Sprintf("\nвсего событий: %d, источников: %d\n", all, len(distinct)))
++	return b.String()
++}
+ 
+-	if len(warning) > 0 {
+-		b.WriteString("\n[" + Warning.String() + "]\n")
+-		var sources []string
+-		for s := range warning {
+-			sources = append(sources, s)
+-		}
+-		sort.Strings(sources)
+-		total := 0
+-		for _, s := range sources {
+-			n := 0
+-			var msgs []string
+-			seen := map[string]bool{}
+-			for _, e := range warning[s] {
+-				n += e.Count
+-				if !seen[e.Message] {
+-					seen[e.Message] = true
++// formatSection форматирует одну секцию отчёта по уровню.
++// onlyCount=true выводит число уникальных сообщений вместо их списка (для Info).
++func formatSection(level Level, entries map[string][]Entry, onlyCount bool) string {
++	if len(entries) == 0 {
++		return ""
++	}
++
++	var b strings.Builder
++	b.WriteString("\n[" + level.String() + "]\n")
++
++	var sources []string
++	for s := range entries {
++		sources = append(sources, s)
++	}
++	sort.Strings(sources)
++
++	total := 0
++	for _, s := range sources {
++		n := 0
++		var msgs []string
++		seen := map[string]bool{}
++
++		for _, e := range entries[s] {
++			n += e.Count
++			if !seen[e.Message] {
++				seen[e.Message] = true
++				if !onlyCount {
+ 					msgs = append(msgs, e.Message)
+ 				}
+ 			}
+-			total += n
+-			b.WriteString(fmt.Sprintf("  %-12s %5d  %s\n", s, n, strings.Join(msgs, "; ")))
+ 		}
+-		b.WriteString(fmt.Sprintf("  итого: %d\n", total))
+-	}
+ 
+-	if len(info) > 0 {
+-		b.WriteString("\n[" + Info.String() + "]\n")
+-		var sources []string
+-		for s := range info {
+-			sources = append(sources, s)
+-		}
+-		sort.Strings(sources)
+-		total := 0
+-		for _, s := range sources {
+-			n := 0
+-			seen := map[string]bool{}
+-			for _, e := range info[s] {
+-				n += e.Count
+-				seen[e.Message] = true
+-			}
+-			total += n
++		total += n
++
++		if onlyCount {
+ 			b.WriteString(fmt.Sprintf("  %-12s %5d  (%d сообщ.)\n", s, n, len(seen)))
++		} else {
++			b.WriteString(fmt.Sprintf("  %-12s %5d  %s\n", s, n, strings.Join(msgs, "; ")))
+ 		}
+-		b.WriteString(fmt.Sprintf("  итого: %d\n", total))
+ 	}
+ 
+-	all := 0
+-	distinct := map[string]bool{}
+-	for _, e := range entries {
+-		all += e.Count
+-		distinct[e.Source] = true
+-	}
+-	b.WriteString(fmt.Sprintf("\nвсего событий: %d, источников: %d\n", all, len(distinct)))
++	b.WriteString(fmt.Sprintf("  итого: %d\n", total))
+ 	return b.String()
+ }

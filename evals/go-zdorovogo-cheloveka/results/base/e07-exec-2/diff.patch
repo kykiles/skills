@@ -1,0 +1,190 @@
+diff -ruN -x .git orig/coverage.out ws/coverage.out
+--- orig/coverage.out	1970-01-01 00:00:00.000000000 +0000
++++ ws/coverage.out	2026-10-01 12:11:53.005011028 +0000
+@@ -0,0 +1,9 @@
++mode: set
++example.com/runner/runner.go:32.76,41.16 7 1
++example.com/runner/runner.go:41.16,42.47 1 1
++example.com/runner/runner.go:42.47,44.24 1 1
++example.com/runner/runner.go:44.24,46.5 1 1
++example.com/runner/runner.go:46.10,50.5 2 1
++example.com/runner/runner.go:51.9,51.30 1 1
++example.com/runner/runner.go:51.30,54.4 1 0
++example.com/runner/runner.go:58.2,62.8 1 1
+diff -ruN -x .git orig/runner.go ws/runner.go
+--- orig/runner.go	2026-10-01 12:21:15.992912827 +0000
++++ ws/runner.go	2026-10-01 12:11:41.058428211 +0000
+@@ -5,7 +5,6 @@
+ 	"bytes"
+ 	"context"
+ 	"os/exec"
+-	"strings"
+ )
+ 
+ // Result — итог работы программы.
+@@ -16,11 +15,49 @@
+ }
+ 
+ // Run запускает программу name с аргументами args и ждёт её завершения.
++// Аргументы передаются программе как есть, без интерпретации оболочкой.
++// Любые символы (пробелы, кавычки, $, *, ; и т.д.) доходят до программы без изменения.
++//
++// Результат содержит:
++//   - Stdout: вывод программы в stdout
++//   - Stderr: вывод программы в stderr
++//   - ExitCode: код выхода программы (0 при успехе, ненулевой при ошибке)
++//
++// Ошибка возвращается только если:
++//   - программу не удалось запустить (программа не найдена и т.д.)
++//   - программа была прервана отменой контекста (errors.Is(err, ctx.Err()) будет true)
++// Ненулевой код выхода программы не является ошибкой Run.
++//
++// Если ctx отменяется, программа останавливается и Run возвращает ошибку.
+ func Run(ctx context.Context, name string, args ...string) (Result, error) {
+-	cmd := exec.Command("sh", "-c", name+" "+strings.Join(args, " "))
+-	var out bytes.Buffer
+-	cmd.Stdout = &out
+-	cmd.Stderr = &out
++	cmd := exec.CommandContext(ctx, name, args...)
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++
+ 	err := cmd.Run()
+-	return Result{Stdout: out.String()}, err
++
++	exitCode := 0
++	if err != nil {
++		if exitErr, ok := err.(*exec.ExitError); ok {
++			// Если контекст отменён, возвращаем ошибку контекста вместо ExitError
++			if ctx.Err() != nil {
++				err = ctx.Err()
++			} else {
++				// Иначе ненулевой код выхода не является ошибкой
++				exitCode = exitErr.ExitCode()
++				err = nil
++			}
++		} else if ctx.Err() != nil {
++			// Если это не ExitError, но контекст отменён, вернуть ошибку контекста
++			err = ctx.Err()
++		}
++		// Другие ошибки (не удалось запустить программу) остаются как есть
++	}
++
++	return Result{
++		Stdout:   stdout.String(),
++		Stderr:   stderr.String(),
++		ExitCode: exitCode,
++	}, err
+ }
+diff -ruN -x .git orig/runner_test.go ws/runner_test.go
+--- orig/runner_test.go	2026-10-01 12:21:15.992960565 +0000
++++ ws/runner_test.go	2026-10-01 12:11:20.470426987 +0000
+@@ -2,8 +2,10 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"strings"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestRunEcho(t *testing.T) {
+@@ -15,3 +17,90 @@
+ 		t.Fatalf("Stdout = %q", res.Stdout)
+ 	}
+ }
++
++// TestRunArgumentsWithSpaces проверяет, что аргументы с пробелами передаются правильно
++func TestRunArgumentsWithSpaces(t *testing.T) {
++	res, err := Run(context.Background(), "echo", "hello world")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if strings.TrimSpace(res.Stdout) != "hello world" {
++		t.Fatalf("Expected 'hello world', got %q", res.Stdout)
++	}
++}
++
++// TestRunArgumentsWithQuotes проверяет, что кавычки передаются как есть
++func TestRunArgumentsWithQuotes(t *testing.T) {
++	res, err := Run(context.Background(), "printf", "%s", `"quoted"`)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.Stdout != `"quoted"` {
++		t.Fatalf("Expected '\"quoted\"', got %q", res.Stdout)
++	}
++}
++
++// TestRunArgumentsWithSpecialChars проверяет, что спецсимволы передаются как есть
++func TestRunArgumentsWithSpecialChars(t *testing.T) {
++	res, err := Run(context.Background(), "printf", "%s", "$PATH;*$(echo)")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if res.Stdout != "$PATH;*$(echo)" {
++		t.Fatalf("Expected '$PATH;*$(echo)', got %q", res.Stdout)
++	}
++}
++
++// TestRunStdoutStderr проверяет, что stdout и stderr разделены
++func TestRunStdoutStderr(t *testing.T) {
++	// Используем /bin/sh для вывода в stderr
++	res, err := Run(context.Background(), "sh", "-c", "echo stdout; echo stderr >&2")
++	if err != nil {
++		t.Fatal(err)
++	}
++
++	if !strings.Contains(res.Stdout, "stdout") {
++		t.Fatalf("Stdout should contain 'stdout', got %q", res.Stdout)
++	}
++	if !strings.Contains(res.Stderr, "stderr") {
++		t.Fatalf("Stderr should contain 'stderr', got %q", res.Stderr)
++	}
++}
++
++// TestRunExitCode проверяет, что ненулевой код выхода не является ошибкой
++func TestRunExitCode(t *testing.T) {
++	res, err := Run(context.Background(), "sh", "-c", "exit 42")
++	if err != nil {
++		t.Fatalf("Expected no error, got %v", err)
++	}
++	if res.ExitCode != 42 {
++		t.Fatalf("Expected exit code 42, got %d", res.ExitCode)
++	}
++}
++
++// TestRunNotFound проверяет, что ошибка возвращается если программа не найдена
++func TestRunNotFound(t *testing.T) {
++	res, err := Run(context.Background(), "nonexistent-command-xyz", "arg")
++	if err == nil {
++		t.Fatal("Expected error for nonexistent command")
++	}
++	// ExitCode должен быть 0 если программа не запустилась
++	if res.ExitCode != 0 {
++		t.Fatalf("Expected exit code 0, got %d", res.ExitCode)
++	}
++}
++
++// TestRunContextCancellation проверяет, что программа останавливается при отмене контекста
++func TestRunContextCancellation(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
++	defer cancel()
++
++	// Используем sleep, который будет прерван
++	_, err := Run(ctx, "sleep", "10")
++	if err == nil {
++		t.Fatal("Expected error due to context cancellation")
++	}
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("Expected context.DeadlineExceeded, got %v", err)
++	}
++}
+diff -ruN -x .git orig/stderr.txt ws/stderr.txt
+--- orig/stderr.txt	1970-01-01 00:00:00.000000000 +0000
++++ ws/stderr.txt	2026-10-01 12:12:22.194430657 +0000
+@@ -0,0 +1 @@
++stderr
+Binary files orig/tool and ws/tool differ
