@@ -1,0 +1,101 @@
+diff -ruN -x .git orig/cache.go ws/cache.go
+--- orig/cache.go	2026-10-01 13:54:22.415261253 +0000
++++ ws/cache.go	2026-10-01 13:52:52.401722710 +0000
+@@ -33,6 +33,8 @@
+ 
+ // Get возвращает значение, если оно есть и не устарело.
+ func (c *Cache) Get(key string) (string, bool) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
+ 	e, ok := c.items[key]
+ 	if !ok || time.Now().After(e.expires) {
+ 		return "", false
+@@ -41,7 +43,7 @@
+ }
+ 
+ // Len возвращает число записей, включая устаревшие, но ещё не удалённые.
+-func (c Cache) Len() int {
++func (c *Cache) Len() int {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()
+ 	return len(c.items)
+diff -ruN -x .git orig/cache_test.go ws/cache_test.go
+--- orig/cache_test.go	2026-10-01 13:54:22.415398975 +0000
++++ ws/cache_test.go	2026-10-01 13:53:38.501725450 +0000
+@@ -1,6 +1,7 @@
+ package ttlcache
+ 
+ import (
++	"sync"
+ 	"testing"
+ 	"time"
+ )
+@@ -15,3 +16,68 @@
+ 		t.Fatal("Get(b) found missing key")
+ 	}
+ }
++
++func TestConcurrentAccess(t *testing.T) {
++	c := New(time.Minute)
++	var wg sync.WaitGroup
++
++	// Concurrent Set operations
++	for i := 0; i < 10; i++ {
++		wg.Add(1)
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Set("key", "value")
++			}
++		}(i)
++	}
++
++	// Concurrent Get operations
++	for i := 0; i < 10; i++ {
++		wg.Add(1)
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Get("key")
++			}
++		}(i)
++	}
++
++	// Concurrent Len operations
++	for i := 0; i < 10; i++ {
++		wg.Add(1)
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 100; j++ {
++				c.Len()
++			}
++		}(i)
++	}
++
++	wg.Wait()
++}
++
++func TestConcurrentCleanup(t *testing.T) {
++	c := New(10 * time.Millisecond)
++
++	var wg sync.WaitGroup
++
++	// Start cleanup
++	stop := c.StartCleanup(5 * time.Millisecond)
++	defer stop()
++
++	// Concurrent Set and Get operations while cleanup is running
++	for i := 0; i < 5; i++ {
++		wg.Add(1)
++		go func(id int) {
++			defer wg.Done()
++			for j := 0; j < 50; j++ {
++				c.Set("key", "value")
++				c.Get("key")
++				c.Len()
++			}
++		}(i)
++	}
++
++	wg.Wait()
++}

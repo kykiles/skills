@@ -1,0 +1,107 @@
+diff -ruN -x .git orig/config.go ws/config.go
+--- orig/config.go	2026-10-01 13:54:26.677697128 +0000
++++ ws/config.go	2026-10-01 13:52:55.941722921 +0000
+@@ -37,14 +37,17 @@
+ func Load(path string) (*Config, error) {
+ 	data, err := os.ReadFile(path)
+ 	if err != nil {
+-		return nil, fmt.Errorf("чтение конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("чтение конфигурации %s: %w", path, err)
+ 	}
+ 	var cfg Config
+ 	if err := json.Unmarshal(data, &cfg); err != nil {
+-		return nil, fmt.Errorf("разбор конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("разбор конфигурации %s: %w", path, err)
+ 	}
+ 	cfg.applyDefaults()
+-	return &cfg, validate(&cfg)
++	if err := validate(&cfg); err != nil {
++		return nil, err
++	}
++	return &cfg, nil
+ }
+ 
+ func (c *Config) applyDefaults() {
+@@ -56,7 +59,7 @@
+ 	}
+ }
+ 
+-func validate(c *Config) *ValidationError {
++func validate(c *Config) error {
+ 	if c.Port < 1 || c.Port > 65535 {
+ 		return &ValidationError{Field: "port", Reason: "должен быть от 1 до 65535"}
+ 	}
+diff -ruN -x .git orig/config_test.go ws/config_test.go
+--- orig/config_test.go	2026-10-01 13:54:26.677807214 +0000
++++ ws/config_test.go	2026-10-01 13:53:30.277724962 +0000
+@@ -1,6 +1,8 @@
+ package svcconfig
+ 
+ import (
++	"errors"
++	"io/fs"
+ 	"os"
+ 	"path/filepath"
+ 	"testing"
+@@ -16,3 +18,61 @@
+ 		t.Fatalf("Load() = %v, %v; want nil config and error", cfg, err)
+ 	}
+ }
++
++func TestLoadNotExist(t *testing.T) {
++	// Проверка, что errors.Is срабатывает для несуществующего файла.
++	path := filepath.Join(t.TempDir(), "nonexistent.json")
++	cfg, err := Load(path)
++	if cfg != nil {
++		t.Fatalf("Load() returned non-nil config for nonexistent file")
++	}
++	if err == nil {
++		t.Fatalf("Load() returned nil error for nonexistent file")
++	}
++	if !errors.Is(err, fs.ErrNotExist) {
++		t.Fatalf("errors.Is(err, fs.ErrNotExist) = false; want true. err = %v", err)
++	}
++}
++
++func TestLoadValid(t *testing.T) {
++	// Проверка, что валидная конфигурация загружается без ошибок.
++	path := filepath.Join(t.TempDir(), "config.json")
++	if err := os.WriteFile(path, []byte(`{"addr":"0.0.0.0","port":9000,"log_level":"debug"}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	cfg, err := Load(path)
++	if err != nil {
++		t.Fatalf("Load() returned error: %v", err)
++	}
++	if cfg == nil {
++		t.Fatalf("Load() returned nil config")
++	}
++	if cfg.Addr != "0.0.0.0" {
++		t.Fatalf("Addr = %q; want 0.0.0.0", cfg.Addr)
++	}
++	if cfg.Port != 9000 {
++		t.Fatalf("Port = %d; want 9000", cfg.Port)
++	}
++}
++
++func TestValidationError(t *testing.T) {
++	// Проверка, что ошибка валидации корректно возвращается.
++	path := filepath.Join(t.TempDir(), "config.json")
++	if err := os.WriteFile(path, []byte(`{"addr":"0.0.0.0","port":70000,"log_level":"debug"}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	cfg, err := Load(path)
++	if cfg != nil {
++		t.Fatalf("Load() returned non-nil config for invalid port")
++	}
++	if err == nil {
++		t.Fatalf("Load() returned nil error for invalid port")
++	}
++	var ve *ValidationError
++	if !errors.As(err, &ve) {
++		t.Fatalf("errors.As(err, &ve) = false; want true. err = %v", err)
++	}
++	if ve.Field != "port" {
++		t.Fatalf("Field = %q; want port", ve.Field)
++	}
++}
