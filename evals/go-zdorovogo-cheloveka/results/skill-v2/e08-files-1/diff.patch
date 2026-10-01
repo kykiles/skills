@@ -1,0 +1,153 @@
+diff -ruN -x .git orig/scan.go ws/scan.go
+--- orig/scan.go	2026-10-01 12:29:46.430315541 +0000
++++ ws/scan.go	2026-10-01 12:28:40.266488796 +0000
+@@ -8,7 +8,8 @@
+ )
+ 
+ // CountMatches возвращает для каждого файла из paths число строк, содержащих
+-// needle. Если какой-то файл не удалось прочитать, возвращает nil и ошибку.
++// needle. Если какой-то файл не удалось прочитать или произошла ошибка при
++// сканировании, возвращает nil и ошибку.
+ func CountMatches(paths []string, needle string) (map[string]int, error) {
+ 	res := make(map[string]int, len(paths))
+ 	for _, p := range paths {
+@@ -16,7 +17,6 @@
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		defer f.Close()
+ 
+ 		n := 0
+ 		sc := bufio.NewScanner(f)
+@@ -25,6 +25,14 @@
+ 				n++
+ 			}
+ 		}
++
++		// Проверяем ошибку сканера
++		if err := sc.Err(); err != nil {
++			f.Close()
++			return nil, err
++		}
++
++		f.Close()
+ 		res[p] = n
+ 	}
+ 	return res, nil
+diff -ruN -x .git orig/scan_test.go ws/scan_test.go
+--- orig/scan_test.go	2026-10-01 12:29:46.430377789 +0000
++++ ws/scan_test.go	2026-10-01 12:28:56.994489790 +0000
+@@ -1,8 +1,10 @@
+ package logscan
+ 
+ import (
++	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+ )
+ 
+@@ -20,3 +22,102 @@
+ 		t.Fatalf("CountMatches = %v; want 2", got)
+ 	}
+ }
++
++// TestCountMatchesLargeFile проверяет правильность результата на больших файлах
++func TestCountMatchesLargeFile(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "large.log")
++
++	// Создаём большой файл с 100k строк
++	const matchCount = 50000
++	const totalLines = 100000
++	var buf strings.Builder
++	for i := 0; i < totalLines; i++ {
++		if i%2 == 0 {
++			buf.WriteString("MATCH line " + fmt.Sprintf("%d\n", i))
++		} else {
++			buf.WriteString("no match line " + fmt.Sprintf("%d\n", i))
++		}
++	}
++
++	if err := os.WriteFile(p, []byte(buf.String()), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	got, err := CountMatches([]string{p}, "MATCH")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got[p] != matchCount {
++		t.Fatalf("CountMatches large file: got %d, want %d", got[p], matchCount)
++	}
++}
++
++// TestCountMatchesManyFiles проверяет, что функция не исчерпывает файловые дескрипторы
++func TestCountMatchesManyFiles(t *testing.T) {
++	dir := t.TempDir()
++	const fileCount = 200 // Больше типового лимита 128 на многих системах
++
++	paths := make([]string, fileCount)
++	for i := 0; i < fileCount; i++ {
++		p := filepath.Join(dir, fmt.Sprintf("file_%d.log", i))
++		content := fmt.Sprintf("line with MARKER\nno marker\n")
++		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		paths[i] = p
++	}
++
++	got, err := CountMatches(paths, "MARKER")
++	if err != nil {
++		t.Fatalf("CountMatches with many files failed: %v", err)
++	}
++
++	// Проверяем, что у каждого файла правильный результат
++	for _, p := range paths {
++		if got[p] != 1 {
++			t.Errorf("File %s: got %d, want 1", p, got[p])
++		}
++	}
++}
++
++// TestCountMatchesHugeFileCount проверяет на архитектурном уровне,
++// что не будет ошибки "too many open files" при работе с огромным количеством файлов.
++// На типичных системах лимит - 1024 дескриптора, много Go-процессов используют несколько.
++// Мы создаём 500 файлов, что превышает безопасный лимит при использовании defer в цикле.
++func TestCountMatchesHugeFileCount(t *testing.T) {
++	dir := t.TempDir()
++	const fileCount = 500
++
++	paths := make([]string, fileCount)
++	for i := 0; i < fileCount; i++ {
++		p := filepath.Join(dir, fmt.Sprintf("log_%03d.txt", i))
++		// Каждый файл содержит разное количество совпадений для проверки корректности
++		matches := i % 5
++		var sb strings.Builder
++		for j := 0; j < 10; j++ {
++			if j < matches {
++				sb.WriteString("ERROR line\n")
++			} else {
++				sb.WriteString("INFO line\n")
++			}
++		}
++		if err := os.WriteFile(p, []byte(sb.String()), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		paths[i] = p
++	}
++
++	got, err := CountMatches(paths, "ERROR")
++	if err != nil {
++		t.Fatalf("CountMatches with huge file count failed: %v", err)
++	}
++
++	// Проверяем, что результаты корректны для всех файлов
++	for i, p := range paths {
++		expected := i % 5
++		if got[p] != expected {
++			t.Errorf("File %d (%s): got %d, want %d", i, p, got[p], expected)
++		}
++	}
++}

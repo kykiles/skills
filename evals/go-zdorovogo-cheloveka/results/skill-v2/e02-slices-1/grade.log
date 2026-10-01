@@ -1,0 +1,9 @@
+ok   не изменён go.mod
+FAIL gofmt: cmdargs_issue_test.go
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+ok   go test -race (с оценщиком)
+info diff: 1 file changed, 4 insertions(+), 2 deletions(-)
+info новые файлы: cmdargs_issue_test.go 
+RESULT FAIL (1)
