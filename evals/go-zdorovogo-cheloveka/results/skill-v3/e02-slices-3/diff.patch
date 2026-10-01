@@ -1,0 +1,46 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 13:54:01.866445336 +0000
++++ ws/cmdargs.go	2026-10-01 13:53:10.581723791 +0000
+@@ -4,13 +4,15 @@
+ // Build возвращает base, за которыми следуют extra.
+ // base не изменяется.
+ func Build(base []string, extra ...string) []string {
+-	return append(base, extra...)
++	result := make([]string, len(base), len(base)+len(extra))
++	copy(result, base)
++	return append(result, extra...)
+ }
+ 
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+ // args не изменяется.
+ func WithoutEmpty(args []string) []string {
+-	out := args[:0]
++	out := make([]string, 0, len(args))
+ 	for _, a := range args {
+ 		if a != "" {
+ 			out = append(out, a)
+diff -ruN -x .git orig/cmdargs_test.go ws/cmdargs_test.go
+--- orig/cmdargs_test.go	2026-10-01 13:54:01.866603254 +0000
++++ ws/cmdargs_test.go	2026-10-01 13:52:42.145722100 +0000
+@@ -20,3 +20,21 @@
+ 		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
+ 	}
+ }
++
++func TestCommandMultiple(t *testing.T) {
++	// Воспроизводит проблему: несколько команд с общим профилем
++	p := NewProfile()
++	cmd1 := p.Command("run", "app1")
++	cmd2 := p.Command("build", "app2")
++
++	want1 := []string{"--quiet", "--color=never", "run", "app1"}
++	want2 := []string{"--quiet", "--color=never", "build", "app2"}
++
++	if !slices.Equal(cmd1, want1) {
++		t.Fatalf("Command(1) = %q; want %q", cmd1, want1)
++	}
++
++	if !slices.Equal(cmd2, want2) {
++		t.Fatalf("Command(2) = %q; want %q", cmd2, want2)
++	}
++}

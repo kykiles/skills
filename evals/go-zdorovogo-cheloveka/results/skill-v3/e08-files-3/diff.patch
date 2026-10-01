@@ -1,0 +1,130 @@
+diff -ruN -x .git orig/scan.go ws/scan.go
+--- orig/scan.go	2026-10-01 13:54:09.313183253 +0000
++++ ws/scan.go	2026-10-01 13:52:29.221721332 +0000
+@@ -12,20 +12,32 @@
+ func CountMatches(paths []string, needle string) (map[string]int, error) {
+ 	res := make(map[string]int, len(paths))
+ 	for _, p := range paths {
+-		f, err := os.Open(p)
++		n, err := countFileMatches(p, needle)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+-		defer f.Close()
+-
+-		n := 0
+-		sc := bufio.NewScanner(f)
+-		for sc.Scan() {
+-			if strings.Contains(sc.Text(), needle) {
+-				n++
+-			}
+-		}
+ 		res[p] = n
+ 	}
+ 	return res, nil
+ }
++
++// countFileMatches закрывает файл до перехода к следующему.
++func countFileMatches(path, needle string) (int, error) {
++	f, err := os.Open(path)
++	if err != nil {
++		return 0, err
++	}
++	defer f.Close()
++
++	n := 0
++	sc := bufio.NewScanner(f)
++	for sc.Scan() {
++		if strings.Contains(sc.Text(), needle) {
++			n++
++		}
++	}
++	if err := sc.Err(); err != nil {
++		return 0, err
++	}
++	return n, nil
++}
+diff -ruN -x .git orig/scan_test.go ws/scan_test.go
+--- orig/scan_test.go	2026-10-01 13:54:09.313198773 +0000
++++ ws/scan_test.go	2026-10-01 13:53:28.413724851 +0000
+@@ -1,8 +1,11 @@
+ package logscan
+ 
+ import (
++	"bytes"
+ 	"os"
+ 	"path/filepath"
++	"strconv"
++	"strings"
+ 	"testing"
+ )
+ 
+@@ -20,3 +23,68 @@
+ 		t.Fatalf("CountMatches = %v; want 2", got)
+ 	}
+ }
++
++// TestCountMatchesManyFiles verifies that many files can be processed without
++// "too many open files" error. Files are closed after each iteration.
++func TestCountMatchesManyFiles(t *testing.T) {
++	dir := t.TempDir()
++	const numFiles = 100
++	var paths []string
++
++	for i := 0; i < numFiles; i++ {
++		p := filepath.Join(dir, "log"+strings.Repeat("0", 5-len(strings.TrimLeft(strconv.Itoa(i), "0")))+strconv.Itoa(i)+".log")
++		data := []byte("line1\nerror\nline3\n")
++		if err := os.WriteFile(p, data, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		paths = append(paths, p)
++	}
++
++	got, err := CountMatches(paths, "error")
++	if err != nil {
++		t.Fatalf("CountMatches failed: %v", err)
++	}
++
++	if len(got) != numFiles {
++		t.Fatalf("CountMatches returned %d files; want %d", len(got), numFiles)
++	}
++
++	for _, p := range paths {
++		if got[p] != 1 {
++			t.Fatalf("CountMatches for %s = %v; want 1", p, got[p])
++		}
++	}
++}
++
++// TestCountMatchesLargeFiles verifies that large files (with many lines) are read
++// completely without missed matches.
++func TestCountMatchesLargeFiles(t *testing.T) {
++	dir := t.TempDir()
++	p := filepath.Join(dir, "large.log")
++
++	// Create a large file with many lines (5MB total)
++	var buf bytes.Buffer
++	const lineSize = 100
++	const numLines = 50000
++	for i := 0; i < numLines; i++ {
++		if i%1000 == 0 {
++			buf.WriteString("error line " + strconv.Itoa(i) + "\n")
++		} else {
++			buf.WriteString(strings.Repeat("x", lineSize) + "\n")
++		}
++	}
++
++	if err := os.WriteFile(p, buf.Bytes(), 0o600); err != nil {
++		t.Fatal(err)
++	}
++
++	got, err := CountMatches([]string{p}, "error")
++	if err != nil {
++		t.Fatalf("CountMatches failed: %v", err)
++	}
++
++	expectedCount := numLines / 1000
++	if got[p] != expectedCount {
++		t.Fatalf("CountMatches = %v; want %d", got[p], expectedCount)
++	}
++}
