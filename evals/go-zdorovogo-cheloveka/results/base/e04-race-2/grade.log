@@ -1,0 +1,9 @@
+ok   не изменён go.mod
+ok   gofmt
+ok   нет посторонних файлов
+ok   go build
+ok   go vet
+ok   go test -race (с оценщиком)
+info diff: 1 file changed, 3 insertions(+), 1 deletion(-)
+info новые файлы: race_test.go 
+RESULT PASS

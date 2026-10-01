@@ -1,0 +1,21 @@
+diff -ruN -x .git orig/cache.go ws/cache.go
+--- orig/cache.go	2026-10-01 12:20:53.904713415 +0000
++++ ws/cache.go	2026-10-01 12:07:22.890455833 +0000
+@@ -33,6 +33,8 @@
+ 
+ // Get возвращает значение, если оно есть и не устарело.
+ func (c *Cache) Get(key string) (string, bool) {
++	c.mu.Lock()
++	defer c.mu.Unlock()
+ 	e, ok := c.items[key]
+ 	if !ok || time.Now().After(e.expires) {
+ 		return "", false
+@@ -41,7 +43,7 @@
+ }
+ 
+ // Len возвращает число записей, включая устаревшие, но ещё не удалённые.
+-func (c Cache) Len() int {
++func (c *Cache) Len() int {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()
+ 	return len(c.items)

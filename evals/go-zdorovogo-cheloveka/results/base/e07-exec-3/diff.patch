@@ -1,0 +1,203 @@
+diff -ruN -x .git orig/runner.go ws/runner.go
+--- orig/runner.go	2026-10-01 12:21:29.984427078 +0000
++++ ws/runner.go	2026-10-01 12:14:13.174437253 +0000
+@@ -5,7 +5,6 @@
+ 	"bytes"
+ 	"context"
+ 	"os/exec"
+-	"strings"
+ )
+ 
+ // Result — итог работы программы.
+@@ -16,11 +15,52 @@
+ }
+ 
+ // Run запускает программу name с аргументами args и ждёт её завершения.
++//
++// Аргументы передаются напрямую программе без интерпретации shell:
++// аргументы с пробелами, кавычками и специальными символами (;, $, *, и т.д.)
++// доходят до программы как есть.
++//
++// Результат содержит:
++//   - Stdout: весь вывод программы в stdout
++//   - Stderr: весь вывод программы в stderr
++//   - ExitCode: код выхода программы
++//
++// Run возвращает ошибку только если:
++//   - программу не удалось запустить (например, она не найдена)
++//   - контекст был отменён (для такой ошибки errors.Is(err, ctx.Err()) истинно)
++//
++// Ненулевой код выхода программы — не считается ошибкой Run;
++// код помещается в Result.ExitCode.
++//
++// При отмене контекста Run останавливает процесс и возвращает ошибку.
+ func Run(ctx context.Context, name string, args ...string) (Result, error) {
+-	cmd := exec.Command("sh", "-c", name+" "+strings.Join(args, " "))
+-	var out bytes.Buffer
+-	cmd.Stdout = &out
+-	cmd.Stderr = &out
++	cmd := exec.CommandContext(ctx, name, args...)
++	var stdout, stderr bytes.Buffer
++	cmd.Stdout = &stdout
++	cmd.Stderr = &stderr
++
+ 	err := cmd.Run()
+-	return Result{Stdout: out.String()}, err
++
++	result := Result{
++		Stdout:   stdout.String(),
++		Stderr:   stderr.String(),
++		ExitCode: 0,
++	}
++
++	// Проверяем, отменён ли контекст
++	if ctx.Err() != nil {
++		return result, ctx.Err()
++	}
++
++	// Если есть ошибка, извлекаем код выхода если это ExitError
++	if err != nil {
++		if exitErr, ok := err.(*exec.ExitError); ok {
++			result.ExitCode = exitErr.ExitCode()
++			return result, nil
++		}
++		// Для других ошибок (программа не найдена и т.д.) возвращаем ошибку
++		return result, err
++	}
++
++	return result, nil
+ }
+diff -ruN -x .git orig/runner_test.go ws/runner_test.go
+--- orig/runner_test.go	2026-10-01 12:21:29.984446848 +0000
++++ ws/runner_test.go	2026-10-01 12:14:33.994438491 +0000
+@@ -2,8 +2,10 @@
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"strings"
+ 	"testing"
++	"time"
+ )
+ 
+ func TestRunEcho(t *testing.T) {
+@@ -15,3 +17,118 @@
+ 		t.Fatalf("Stdout = %q", res.Stdout)
+ 	}
+ }
++
++// TestArgumentsWithSpaces проверяет, что аргументы с пробелами передаются как есть
++func TestArgumentsWithSpaces(t *testing.T) {
++	res, err := Run(context.Background(), "echo", "hello world", "foo bar")
++	if err != nil {
++		t.Fatal(err)
++	}
++	output := strings.TrimSpace(res.Stdout)
++	if !strings.Contains(output, "hello world") || !strings.Contains(output, "foo bar") {
++		t.Fatalf("Expected arguments with spaces, got: %q", output)
++	}
++}
++
++// TestArgumentsWithSpecialCharacters проверяет, что специальные символы не интерпретируются shell
++func TestArgumentsWithSpecialCharacters(t *testing.T) {
++	// Тестируем аргумент с `;`, `$`, `*`
++	res, err := Run(context.Background(), "echo", "test;value", "$HOME", "*.txt")
++	if err != nil {
++		t.Fatal(err)
++	}
++	output := strings.TrimSpace(res.Stdout)
++	// Проверяем, что аргументы не интерпретированы как shell команды
++	if !strings.Contains(output, "test;value") || !strings.Contains(output, "$HOME") || !strings.Contains(output, "*.txt") {
++		t.Fatalf("Special characters not preserved: %q", output)
++	}
++	// Убедимся, что $HOME не был подставлен (если это произошло бы в shell)
++	if strings.Contains(output, "/home/") || strings.Contains(output, "/root") {
++		t.Fatalf("$HOME was expanded, should be literal: %q", output)
++	}
++}
++
++// TestStdoutStderr проверяет, что stdout и stderr разделены
++func TestStdoutStderr(t *testing.T) {
++	// Используем printf для более точного контроля
++	res, err := Run(context.Background(), "bash", "-c", "echo 'to stdout'; echo 'to stderr' >&2")
++	if err != nil {
++		t.Fatal(err)
++	}
++	stdout := strings.TrimSpace(res.Stdout)
++	stderr := strings.TrimSpace(res.Stderr)
++	if stdout != "to stdout" {
++		t.Fatalf("Stdout = %q, want 'to stdout'", stdout)
++	}
++	if stderr != "to stderr" {
++		t.Fatalf("Stderr = %q, want 'to stderr'", stderr)
++	}
++}
++
++// TestNonZeroExitCode проверяет, что ненулевой код выхода не считается ошибкой
++func TestNonZeroExitCode(t *testing.T) {
++	// Используем `false` что возвращает код выхода 1
++	res, err := Run(context.Background(), "false")
++	if err != nil {
++		t.Fatalf("Expected no error, but got: %v", err)
++	}
++	if res.ExitCode != 1 {
++		t.Fatalf("ExitCode = %d, want 1", res.ExitCode)
++	}
++}
++
++// TestExitCodePreservation проверяет что различные коды выхода правильно сохраняются
++func TestExitCodePreservation(t *testing.T) {
++	testCases := []struct {
++		name     string
++		cmd      string
++		wantCode int
++	}{
++		{"exit 0", "exit 0", 0},
++		{"exit 1", "exit 1", 1},
++		{"exit 42", "exit 42", 42},
++	}
++
++	for _, tc := range testCases {
++		t.Run(tc.name, func(t *testing.T) {
++			res, err := Run(context.Background(), "bash", "-c", tc.cmd)
++			if err != nil {
++				t.Fatalf("Expected no error, but got: %v", err)
++			}
++			if res.ExitCode != tc.wantCode {
++				t.Fatalf("ExitCode = %d, want %d", res.ExitCode, tc.wantCode)
++			}
++		})
++	}
++}
++
++// TestContextCancellation проверяет, что отмена контекста останавливает программу
++func TestContextCancellation(t *testing.T) {
++	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
++	defer cancel()
++
++	// Используем `sleep 10` которая будет остановлена
++	res, err := Run(ctx, "sleep", "10")
++	if err == nil {
++		t.Fatalf("Expected error due to context cancellation, got nil")
++	}
++	if !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("Expected context.DeadlineExceeded, got: %v", err)
++	}
++	// Проверяем что код выхода 0 (процесс был убит, не завершился с ошибкой)
++	if res.ExitCode != 0 {
++		t.Logf("Note: ExitCode = %d after cancellation", res.ExitCode)
++	}
++}
++
++// TestProgramNotFound проверяет, что ошибка возвращается если программа не найдена
++func TestProgramNotFound(t *testing.T) {
++	res, err := Run(context.Background(), "nonexistent_program_12345", "arg1")
++	if err == nil {
++		t.Fatalf("Expected error for nonexistent program, got nil")
++	}
++	// Должна быть ошибка, не просто код выхода
++	if res.ExitCode != 0 {
++		t.Logf("Note: ExitCode = %d for nonexistent program", res.ExitCode)
++	}
++}
+Binary files orig/tool and ws/tool differ

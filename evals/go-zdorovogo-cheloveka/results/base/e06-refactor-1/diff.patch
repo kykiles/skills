@@ -1,0 +1,211 @@
+diff -ruN -x .git orig/export.go ws/export.go
+--- orig/export.go	2026-10-01 12:20:58.675419336 +0000
++++ ws/export.go	2026-10-01 12:08:10.282415682 +0000
+@@ -9,9 +9,9 @@
+ func FormatCSV(entries []Entry) string {
+ 	var b strings.Builder
+ 	b.WriteString("source,level,message,count\n")
+-	for _,e := range entries {
++	for _, e := range entries {
+ 		// TODO: экранирование запятых и кавычек
+-		b.WriteString(e.Source+","+e.Level.String()+","+e.Message+","+strconv.Itoa(e.Count)+"\n")
++		b.WriteString(e.Source + "," + e.Level.String() + "," + e.Message + "," + strconv.Itoa(e.Count) + "\n")
+ 	}
+ 	return b.String()
+ }
+diff -ruN -x .git orig/report.go ws/report.go
+--- orig/report.go	2026-10-01 12:20:58.581717345 +0000
++++ ws/report.go	2026-10-01 12:07:15.338412416 +0000
+@@ -15,6 +15,45 @@
+ 	Count   int
+ }
+ 
++// messageFormatter форматирует сообщения для одного источника.
++// Параметры: список уникальных сообщений и их количество.
++type messageFormatter func(msgs []string, uniqueCount int) string
++
++// formatMessageSection форматирует одну секцию отчёта по уровню.
++func formatMessageSection(levelStr string, section map[string][]Entry, formatter messageFormatter) string {
++	if len(section) == 0 {
++		return ""
++	}
++
++	var b strings.Builder
++	b.WriteString("\n[" + levelStr + "]\n")
++
++	var sources []string
++	for s := range section {
++		sources = append(sources, s)
++	}
++	sort.Strings(sources)
++
++	total := 0
++	for _, s := range sources {
++		n := 0
++		var msgs []string
++		seen := map[string]bool{}
++		for _, e := range section[s] {
++			n += e.Count
++			if !seen[e.Message] {
++				seen[e.Message] = true
++				msgs = append(msgs, e.Message)
++			}
++		}
++		total += n
++		b.WriteString(fmt.Sprintf("  %-12s %5d  %s\n", s, n, formatter(msgs, len(seen))))
++	}
++
++	b.WriteString(fmt.Sprintf("  итого: %d\n", total))
++	return b.String()
++}
++
+ // FormatReport возвращает отчёт: секции по уровням от Critical к Info, внутри
+ // секции источники по алфавиту с суммой Count. Для Critical и Warning выводятся
+ // уникальные сообщения в порядке появления, для Info — только их число.
+@@ -37,76 +76,19 @@
+ 		}
+ 	}
+ 
+-	if len(critical) > 0 {
+-		b.WriteString("\n[" + Critical.String() + "]\n")
+-		var sources []string
+-		for s := range critical {
+-			sources = append(sources, s)
+-		}
+-		sort.Strings(sources)
+-		total := 0
+-		for _, s := range sources {
+-			n := 0
+-			var msgs []string
+-			seen := map[string]bool{}
+-			for _, e := range critical[s] {
+-				n += e.Count
+-				if !seen[e.Message] {
+-					seen[e.Message] = true
+-					msgs = append(msgs, e.Message)
+-				}
+-			}
+-			total += n
+-			b.WriteString(fmt.Sprintf("  %-12s %5d  %s\n", s, n, strings.Join(msgs, "; ")))
+-		}
+-		b.WriteString(fmt.Sprintf("  итого: %d\n", total))
++	// Форматер для выведения сообщений: соединить через "; "
++	messagesFormat := func(msgs []string, _ int) string {
++		return strings.Join(msgs, "; ")
+ 	}
+ 
+-	if len(warning) > 0 {
+-		b.WriteString("\n[" + Warning.String() + "]\n")
+-		var sources []string
+-		for s := range warning {
+-			sources = append(sources, s)
+-		}
+-		sort.Strings(sources)
+-		total := 0
+-		for _, s := range sources {
+-			n := 0
+-			var msgs []string
+-			seen := map[string]bool{}
+-			for _, e := range warning[s] {
+-				n += e.Count
+-				if !seen[e.Message] {
+-					seen[e.Message] = true
+-					msgs = append(msgs, e.Message)
+-				}
+-			}
+-			total += n
+-			b.WriteString(fmt.Sprintf("  %-12s %5d  %s\n", s, n, strings.Join(msgs, "; ")))
+-		}
+-		b.WriteString(fmt.Sprintf("  итого: %d\n", total))
++	// Форматер для Info: вывести количество уникальных сообщений
++	infoFormat := func(_ []string, count int) string {
++		return fmt.Sprintf("(%d сообщ.)", count)
+ 	}
+ 
+-	if len(info) > 0 {
+-		b.WriteString("\n[" + Info.String() + "]\n")
+-		var sources []string
+-		for s := range info {
+-			sources = append(sources, s)
+-		}
+-		sort.Strings(sources)
+-		total := 0
+-		for _, s := range sources {
+-			n := 0
+-			seen := map[string]bool{}
+-			for _, e := range info[s] {
+-				n += e.Count
+-				seen[e.Message] = true
+-			}
+-			total += n
+-			b.WriteString(fmt.Sprintf("  %-12s %5d  (%d сообщ.)\n", s, n, len(seen)))
+-		}
+-		b.WriteString(fmt.Sprintf("  итого: %d\n", total))
+-	}
++	b.WriteString(formatMessageSection(Critical.String(), critical, messagesFormat))
++	b.WriteString(formatMessageSection(Warning.String(), warning, messagesFormat))
++	b.WriteString(formatMessageSection(Info.String(), info, infoFormat))
+ 
+ 	all := 0
+ 	distinct := map[string]bool{}
+diff -ruN -x .git orig/report_test.go ws/report_test.go
+--- orig/report_test.go	2026-10-01 12:20:58.581739016 +0000
++++ ws/report_test.go	2026-10-01 12:08:10.282415682 +0000
+@@ -23,3 +23,57 @@
+ 		t.Fatalf("FormatReport mismatch:\n%s\nwant:\n%s", got, want)
+ 	}
+ }
++
++func TestFormatReportComplex(t *testing.T) {
++	// Тест с дублированием сообщений на разных уровнях
++	got := FormatReport("тест", []Entry{
++		{Source: "db", Level: Critical, Message: "disk full", Count: 2},
++		{Source: "db", Level: Critical, Message: "connection lost", Count: 1},
++		{Source: "api", Level: Warning, Message: "high latency", Count: 3},
++		{Source: "cache", Level: Warning, Message: "high latency", Count: 1},
++		{Source: "web", Level: Info, Message: "restart", Count: 5},
++		{Source: "web", Level: Info, Message: "restart", Count: 2}, // дублирование того же сообщения
++		{Source: "web", Level: Info, Message: "update", Count: 1},
++		{Source: "db", Level: Info, Message: "backup", Count: 3},
++	})
++
++	// Проверяем основные части вывода
++	if got[:len("=== тест ===")] != "=== тест ===" {
++		t.Errorf("Title line missing or incorrect")
++	}
++
++	// Проверяем наличие всех секций
++	if !contains(got, "[Critical]") {
++		t.Error("Missing Critical section")
++	}
++	if !contains(got, "[Warning]") {
++		t.Error("Missing Warning section")
++	}
++	if !contains(got, "[Info]") {
++		t.Error("Missing Info section")
++	}
++
++	// Проверяем форматирование Critical: два сообщения для db
++	if !contains(got, "disk full; connection lost") {
++		t.Errorf("Critical messages not formatted correctly. Got:\n%s", got)
++	}
++
++	// Проверяем форматирование Info: количество уникальных сообщений (2 для web, 1 для db)
++	if !contains(got, "(2 сообщ.)") && !contains(got, "(1 сообщ.)") {
++		t.Errorf("Info message count formatting incorrect. Got:\n%s", got)
++	}
++
++	// Проверяем итоговое количество событий: 3 + 4 + 11 = 18
++	if !contains(got, "всего событий: 18") {
++		t.Errorf("Total count incorrect. Got:\n%s", got)
++	}
++}
++
++func contains(s, substr string) bool {
++	for i := 0; i <= len(s)-len(substr); i++ {
++		if s[i:i+len(substr)] == substr {
++			return true
++		}
++	}
++	return false
++}

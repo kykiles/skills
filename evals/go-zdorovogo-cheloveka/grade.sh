@@ -44,7 +44,12 @@ for f in $changed; do
 done
 if [ -z "$unformatted" ]; then ok "gofmt"; else fail "gofmt:$unformatted"; fi
 
-# 3. Сборка и статические проверки на копии.
+# 3. Посторонние файлы: исполнитель может добавлять Go-файлы и testdata/,
+#    но не отчёты, профили покрытия, логи и бинарники.
+extra=$(cd "$ws" && git ls-files --others --exclude-standard | grep -v -E '(\.go$|(^|/)testdata/)' | grep -v -x -F "$protected" | tr '\n' ' ')
+if [ -z "$extra" ]; then ok "нет посторонних файлов"; else fail "посторонние файлы: $extra"; fi
+
+# 4. Сборка и статические проверки на копии.
 mkdir -p "$tmp/ws"
 cp -a "$ws/." "$tmp/ws/"
 cd "$tmp/ws"
@@ -63,7 +68,7 @@ if [ -n "$API_STABLE" ]; then
 	fi
 fi
 
-# 4. Скрытые тесты оценщика вместе с тестами проекта, под -race.
+# 5. Скрытые тесты оценщика вместе с тестами проекта, под -race.
 cp -r "$case_dir/grader/." "$tmp/ws/"
 if go test -race -count=1 -timeout 180s ./... >"$tmp/test.log" 2>&1; then
 	ok "go test -race (с оценщиком)"
@@ -80,7 +85,7 @@ if [ -n "$MIN_GO" ]; then
 	fi
 fi
 
-# 5. Объём изменений (для ручного ревью).
+# 6. Объём изменений (для ручного ревью).
 cd "$ws"
 echo "info diff: $(git diff --shortstat HEAD | sed 's/^ //')"
 new=$(git ls-files --others --exclude-standard | tr '\n' ' ')

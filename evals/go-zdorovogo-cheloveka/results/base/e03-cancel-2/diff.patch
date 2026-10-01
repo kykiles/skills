@@ -1,0 +1,234 @@
+diff -ruN -x .git orig/batch.go ws/batch.go
+--- orig/batch.go	2026-10-01 12:21:06.528325949 +0000
++++ ws/batch.go	2026-10-01 12:16:19.458444760 +0000
+@@ -1,7 +1,10 @@
+ // Package batch выполняет обработку элементов параллельно.
+ package batch
+ 
+-import "context"
++import (
++	"context"
++	"sync"
++)
+ 
+ // Result — результат обработки одного элемента.
+ type Result struct {
+@@ -26,11 +29,21 @@
+ 		err   error
+ 	}
+ 
+-	jobs := make(chan job)
+-	outcomes := make(chan outcome)
++	// Create own context to signal early termination to sender
++	processCtx, cancel := context.WithCancel(context.Background())
++	defer cancel()
+ 
++	// Buffered channels: outcomes needs large buffer to prevent worker blocking
++	jobs := make(chan job, workers)
++	outcomes := make(chan outcome, len(items))
++
++	var wg sync.WaitGroup
++
++	// Start workers
+ 	for w := 0; w < workers; w++ {
++		wg.Add(1)
+ 		go func() {
++			defer wg.Done()
+ 			for j := range jobs {
+ 				v, err := fn(ctx, j.item)
+ 				outcomes <- outcome{j.index, v, err}
+@@ -38,24 +51,56 @@
+ 		}()
+ 	}
+ 
++	// Start sender goroutine
++	wg.Add(1)
+ 	go func() {
++		defer wg.Done()
++		defer close(jobs)
+ 		for i, item := range items {
+-			jobs <- job{i, item}
++			select {
++			case jobs <- job{i, item}:
++			case <-processCtx.Done():
++				// Stop sending when we're cancelled
++				return
++			}
+ 		}
+-		close(jobs)
+ 	}()
+ 
+ 	results := make([]Result, len(items))
+-	for range items {
+-		select {
+-		case o := <-outcomes:
+-			if o.err != nil {
+-				return nil, o.err
+-			}
++	var firstErr error
++
++	// Start a goroutine to close outcomes when all workers are done
++	done := make(chan struct{})
++	go func() {
++		wg.Wait()
++		close(outcomes)
++		close(done)
++	}()
++
++	// Read all outcomes until channel is closed
++	for o := range outcomes {
++		if o.err != nil && firstErr == nil {
++			firstErr = o.err
++			cancel() // Signal sender to stop sending
++		} else if firstErr == nil {
+ 			results[o.index] = Result{Item: items[o.index], Value: o.value}
+-		case <-ctx.Done():
+-			return nil, ctx.Err()
+ 		}
+ 	}
++
++	// Check for context cancellation
++	select {
++	case <-ctx.Done():
++		if firstErr == nil {
++			firstErr = ctx.Err()
++		}
++	default:
++	}
++
++	// Wait for all goroutines to finish before returning
++	<-done
++
++	if firstErr != nil {
++		return nil, firstErr
++	}
+ 	return results, nil
+ }
+diff -ruN -x .git orig/batch_regression_test.go ws/batch_regression_test.go
+--- orig/batch_regression_test.go	1970-01-01 00:00:00.000000000 +0000
++++ ws/batch_regression_test.go	2026-10-01 12:17:14.714448045 +0000
+@@ -0,0 +1,124 @@
++package batch
++
++import (
++	"context"
++	"errors"
++	"runtime"
++	"sync"
++	"testing"
++	"time"
++)
++
++// TestProcessAllStopsOnError verifies that when fn returns an error,
++// ProcessAll stops gracefully without goroutine leaks
++func TestProcessAllStopsOnError(t *testing.T) {
++	initialGoroutines := runtime.NumGoroutine()
++
++	for iteration := 0; iteration < 3; iteration++ {
++		_, err := ProcessAll(context.Background(), []string{"a", "b", "c", "d", "e"}, 2, func(_ context.Context, s string) (int, error) {
++			if s == "c" {
++				return 0, errors.New("test error")
++			}
++			return len(s), nil
++		})
++
++		if err == nil || err.Error() != "test error" {
++			t.Fatalf("iteration %d: expected error, got %v", iteration, err)
++		}
++
++		// Give goroutines a chance to clean up
++		time.Sleep(10 * time.Millisecond)
++	}
++
++	// Check that goroutines haven't leaked significantly
++	finalGoroutines := runtime.NumGoroutine()
++	if finalGoroutines > initialGoroutines+2 {
++		t.Fatalf("goroutine leak: started with %d, ended with %d", initialGoroutines, finalGoroutines)
++	}
++}
++
++// TestNoExecutionAfterError verifies that all queued items complete
++// even after an error (per the contract: wait for already-started calls)
++func TestNoExecutionAfterError(t *testing.T) {
++	var mu sync.Mutex
++	var callCount int
++
++	_, err := ProcessAll(context.Background(), []string{"a", "b", "c"}, 1, func(_ context.Context, s string) (int, error) {
++		mu.Lock()
++		callCount++
++		mu.Unlock()
++		if s == "b" {
++			return 0, errors.New("test error")
++		}
++		return len(s), nil
++	})
++
++	if err == nil || err.Error() != "test error" {
++		t.Fatalf("expected error, got %v", err)
++	}
++
++	mu.Lock()
++	defer mu.Unlock()
++
++	// With 1 worker, we should have called fn for a, b (where b errors), and then
++	// c might or might not be called depending on timing. But at least a and b should be called.
++	if callCount < 2 {
++		t.Fatalf("expected at least 2 calls to fn, got %d", callCount)
++	}
++}
++
++// TestProcessAllCancellation verifies that when ctx is cancelled,
++// ProcessAll stops gracefully without goroutine leaks
++func TestProcessAllCancellation(t *testing.T) {
++	initialGoroutines := runtime.NumGoroutine()
++
++	for iteration := 0; iteration < 3; iteration++ {
++		ctx, cancel := context.WithCancel(context.Background())
++
++		go func() {
++			// Cancel after some time
++			time.Sleep(50 * time.Millisecond)
++			cancel()
++		}()
++
++		_, err := ProcessAll(ctx, []string{"a", "b", "c", "d", "e"}, 2, func(_ context.Context, s string) (int, error) {
++			time.Sleep(100 * time.Millisecond)
++			return len(s), nil
++		})
++
++		if err != context.Canceled {
++			t.Fatalf("iteration %d: expected context.Canceled, got %v", iteration, err)
++		}
++
++		// Give goroutines a chance to clean up
++		time.Sleep(50 * time.Millisecond)
++	}
++
++	// Check that goroutines haven't leaked significantly
++	finalGoroutines := runtime.NumGoroutine()
++	if finalGoroutines > initialGoroutines+2 {
++		t.Fatalf("goroutine leak: started with %d, ended with %d", initialGoroutines, finalGoroutines)
++	}
++}
++
++// TestProcessAllSuccess verifies that normal execution still works correctly
++func TestProcessAllSuccess(t *testing.T) {
++	items := []string{"a", "bb", "ccc", "dddd"}
++	got, err := ProcessAll(context.Background(), items, 2, func(_ context.Context, s string) (int, error) {
++		return len(s), nil
++	})
++
++	if err != nil {
++		t.Fatalf("unexpected error: %v", err)
++	}
++
++	if len(got) != len(items) {
++		t.Fatalf("expected %d results, got %d", len(items), len(got))
++	}
++
++	for i, r := range got {
++		if r.Item != items[i] || r.Value != len(items[i]) {
++			t.Fatalf("result %d = %+v, expected Item=%s Value=%d", i, r, items[i], len(items[i]))
++		}
++	}
++}

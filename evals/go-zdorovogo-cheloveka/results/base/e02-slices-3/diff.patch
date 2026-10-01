@@ -1,0 +1,45 @@
+diff -ruN -x .git orig/cmdargs.go ws/cmdargs.go
+--- orig/cmdargs.go	2026-10-01 12:21:18.642083259 +0000
++++ ws/cmdargs.go	2026-10-01 12:14:18.922437595 +0000
+@@ -4,7 +4,10 @@
+ // Build возвращает base, за которыми следуют extra.
+ // base не изменяется.
+ func Build(base []string, extra ...string) []string {
+-	return append(base, extra...)
++	result := make([]string, 0, len(base)+len(extra))
++	result = append(result, base...)
++	result = append(result, extra...)
++	return result
+ }
+ 
+ // WithoutEmpty возвращает args без пустых строк, сохраняя порядок.
+diff -ruN -x .git orig/cmdargs_test.go ws/cmdargs_test.go
+--- orig/cmdargs_test.go	2026-10-01 12:21:18.642373943 +0000
++++ ws/cmdargs_test.go	2026-10-01 12:14:11.246437139 +0000
+@@ -20,3 +20,26 @@
+ 		t.Fatalf("WithoutEmpty() = %q; want %q", got, want)
+ 	}
+ }
++
++func TestProfileMultipleCommands(t *testing.T) {
++	// Тест проверяет что несколько команд с одним профилем работают независимо
++	profile := NewProfile()
++
++	cmd1 := profile.Command("run", "test1")
++	cmd2 := profile.Command("build", "test2")
++
++	want1 := []string{"--quiet", "--color=never", "run", "test1"}
++	want2 := []string{"--quiet", "--color=never", "build", "test2"}
++
++	if !slices.Equal(cmd1, want1) {
++		t.Errorf("First command = %q; want %q", cmd1, want1)
++	}
++	if !slices.Equal(cmd2, want2) {
++		t.Errorf("Second command = %q; want %q", cmd2, want2)
++	}
++
++	// Проверяем что первая команда не была изменена
++	if !slices.Equal(cmd1, want1) {
++		t.Errorf("First command was modified = %q; want %q", cmd1, want1)
++	}
++}

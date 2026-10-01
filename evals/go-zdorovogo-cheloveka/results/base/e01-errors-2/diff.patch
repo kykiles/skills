@@ -1,0 +1,26 @@
+diff -ruN -x .git orig/config.go ws/config.go
+--- orig/config.go	2026-10-01 12:21:00.971439999 +0000
++++ ws/config.go	2026-10-01 12:11:29.402427518 +0000
+@@ -37,11 +37,11 @@
+ func Load(path string) (*Config, error) {
+ 	data, err := os.ReadFile(path)
+ 	if err != nil {
+-		return nil, fmt.Errorf("чтение конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("чтение конфигурации %s: %w", path, err)
+ 	}
+ 	var cfg Config
+ 	if err := json.Unmarshal(data, &cfg); err != nil {
+-		return nil, fmt.Errorf("разбор конфигурации %s: %v", path, err)
++		return nil, fmt.Errorf("разбор конфигурации %s: %w", path, err)
+ 	}
+ 	cfg.applyDefaults()
+ 	return &cfg, validate(&cfg)
+@@ -56,7 +56,7 @@
+ 	}
+ }
+ 
+-func validate(c *Config) *ValidationError {
++func validate(c *Config) error {
+ 	if c.Port < 1 || c.Port > 65535 {
+ 		return &ValidationError{Field: "port", Reason: "должен быть от 1 до 65535"}
+ 	}
