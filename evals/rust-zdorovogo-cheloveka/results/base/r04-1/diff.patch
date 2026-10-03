@@ -1,0 +1,226 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r04-refactor/src/report.rs ws/base/r04-1/src/report.rs
+--- base_r04-refactor/src/report.rs	2026-10-03 12:57:10.358663684 +0000
++++ ws/base/r04-1/src/report.rs	2026-10-03 12:57:53.937968712 +0000
+@@ -2,6 +2,9 @@
+ 
+ use crate::Level;
+ 
++/// Тип для карты источник → список записей
++type SourceMap<'a> = BTreeMap<&'a str, Vec<&'a Entry>>;
++
+ /// Агрегированное событие мониторинга.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct Entry {
+@@ -19,9 +22,37 @@
+     let mut out = String::new();
+     out.push_str(&format!("=== {title} ===\n"));
+ 
++    // Группируем записи по уровню и источнику
++    let (critical, warning, info) = group_entries_by_level(entries);
++
++    // Выводим секции в порядке важности
++    for section in [
++        format_level_section(Level::Critical, &critical),
++        format_level_section(Level::Warning, &warning),
++        format_level_section(Level::Info, &info),
++    ]
++    .into_iter()
++    .flatten()
++    {
++        out.push_str(&section);
++    }
++
++    let all: i64 = entries.iter().map(|entry| entry.count).sum();
++    let sources: BTreeSet<&str> = entries.iter().map(|entry| entry.source.as_str()).collect();
++    out.push_str(&format!(
++        "\nвсего событий: {all}, источников: {}\n",
++        sources.len()
++    ));
++    out
++}
++
++/// Группирует записи по уровню важности и источнику.
++/// Возвращает три отдельных карты: для Critical, Warning и Info.
++fn group_entries_by_level(entries: &[Entry]) -> (SourceMap<'_>, SourceMap<'_>, SourceMap<'_>) {
+     let mut critical: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
+     let mut warning: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
+     let mut info: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
++
+     for entry in entries {
+         match entry.level {
+             Level::Critical => critical.entry(&entry.source).or_default().push(entry),
+@@ -30,80 +61,65 @@
+         }
+     }
+ 
+-    if !critical.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Critical));
+-        let mut total = 0;
+-        for (source, list) in &critical {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
++    (critical, warning, info)
++}
++
++/// Форматирует секцию для одного уровня важности.
++/// Возвращает строку с секцией или None, если секция пуста.
++fn format_level_section(level: Level, sources: &SourceMap) -> Option<String> {
++    if sources.is_empty() {
++        return None;
++    }
++
++    let mut section = format!("\n[{}]\n", level);
++    let mut total = 0;
++
++    for (source, list) in sources {
++        let (message_part, count) = if matches!(level, Level::Info) {
++            // Для Info: показываем количество уникальных сообщений
++            format_info_messages(list)
++        } else {
++            // Для Critical и Warning: выводим уникальные сообщения
++            format_level_messages(list)
++        };
++
++        total += count;
++        section.push_str(&format!(
++            "  {:<12} {:>5}  {}\n",
++            source, count, message_part
++        ));
+     }
+ 
+-    if !warning.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Warning));
+-        let mut total = 0;
+-        for (source, list) in &warning {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
++    section.push_str(&format!("  итого: {total}\n"));
++    Some(section)
++}
++
++/// Форматирует сообщения для уровней Critical и Warning.
++fn format_level_messages(list: &[&Entry]) -> (String, i64) {
++    let mut n = 0;
++    let mut messages: Vec<&str> = Vec::new();
++
++    for entry in list {
++        n += entry.count;
++        if !messages.contains(&entry.message.as_str()) {
++            messages.push(&entry.message);
+         }
+-        out.push_str(&format!("  итого: {total}\n"));
+     }
+ 
+-    if !info.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Info));
+-        let mut total = 0;
+-        for (source, list) in &info {
+-            let mut n = 0;
+-            let mut messages: BTreeSet<&str> = BTreeSet::new();
+-            for entry in list {
+-                n += entry.count;
+-                messages.insert(&entry.message);
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  ({} сообщ.)\n",
+-                source,
+-                n,
+-                messages.len()
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
++    (messages.join("; "), n)
++}
++
++/// Форматирует сообщения для уровня Info.
++fn format_info_messages(list: &[&Entry]) -> (String, i64) {
++    let mut n = 0;
++    let mut messages: BTreeSet<&str> = BTreeSet::new();
++
++    for entry in list {
++        n += entry.count;
++        messages.insert(&entry.message);
+     }
+ 
+-    let all: i64 = entries.iter().map(|entry| entry.count).sum();
+-    let sources: BTreeSet<&str> = entries.iter().map(|entry| entry.source.as_str()).collect();
+-    out.push_str(&format!(
+-        "\nвсего событий: {all}, источников: {}\n",
+-        sources.len()
+-    ));
+-    out
++    (format!("({} сообщ.)", messages.len()), n)
+ }
+ 
+ #[cfg(test)]
+@@ -142,4 +158,41 @@
+ ";
+         assert_eq!(got, want);
+     }
++
++    #[test]
++    fn formats_complex_report() {
++        let got = format_report(
++            "Daily Report",
++            &[
++                entry("db", Level::Critical, "disk full", 2),
++                entry("api", Level::Critical, "connection timeout", 3),
++                entry("db", Level::Critical, "disk full", 1),
++                entry("web", Level::Warning, "high memory", 5),
++                entry("api", Level::Warning, "slow response", 10),
++                entry("db", Level::Info, "backup started", 1),
++                entry("web", Level::Info, "request ok", 100),
++                entry("web", Level::Info, "cache hit", 200),
++            ],
++        );
++        let want = "=== Daily Report ===
++
++[Critical]
++  api              3  connection timeout
++  db               3  disk full
++  итого: 6
++
++[Warning]
++  api             10  slow response
++  web              5  high memory
++  итого: 15
++
++[Info]
++  db               1  (1 сообщ.)
++  web            300  (2 сообщ.)
++  итого: 301
++
++всего событий: 322, источников: 3
++";
++        assert_eq!(got, want);
++    }
+ }

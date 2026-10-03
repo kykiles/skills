@@ -1,0 +1,196 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r04-refactor/src/report.rs ws/base/r04-3/src/report.rs
+--- base_r04-refactor/src/report.rs	2026-10-03 12:57:10.358663684 +0000
++++ ws/base/r04-3/src/report.rs	2026-10-03 12:57:41.021967944 +0000
+@@ -11,6 +11,77 @@
+     pub count: i64,
+ }
+ 
++/// Обрабатывает секцию с выводом сообщений (Critical, Warning).
++/// Сохраняет порядок появления первого сообщения.
++fn append_messages_section(
++    out: &mut String,
++    level: Level,
++    entries_by_source: &BTreeMap<&str, Vec<&Entry>>,
++) {
++    if entries_by_source.is_empty() {
++        return;
++    }
++
++    out.push_str(&format!("\n[{}]\n", level));
++    let mut total = 0;
++
++    for (source, list) in entries_by_source {
++        let mut count = 0;
++        let mut messages: Vec<&str> = Vec::new();
++
++        for entry in list {
++            count += entry.count;
++            if !messages.contains(&entry.message.as_str()) {
++                messages.push(&entry.message);
++            }
++        }
++
++        total += count;
++        out.push_str(&format!(
++            "  {:<12} {:>5}  {}\n",
++            source,
++            count,
++            messages.join("; ")
++        ));
++    }
++
++    out.push_str(&format!("  итого: {total}\n"));
++}
++
++/// Обрабатывает секцию Info: выводит только количество сообщений.
++fn append_count_section(
++    out: &mut String,
++    level: Level,
++    entries_by_source: &BTreeMap<&str, Vec<&Entry>>,
++) {
++    if entries_by_source.is_empty() {
++        return;
++    }
++
++    out.push_str(&format!("\n[{}]\n", level));
++    let mut total = 0;
++
++    for (source, list) in entries_by_source {
++        let mut count = 0;
++        let mut messages: BTreeSet<&str> = BTreeSet::new();
++
++        for entry in list {
++            count += entry.count;
++            messages.insert(&entry.message);
++        }
++
++        total += count;
++        out.push_str(&format!(
++            "  {:<12} {:>5}  ({} сообщ.)\n",
++            source,
++            count,
++            messages.len()
++        ));
++    }
++
++    out.push_str(&format!("  итого: {total}\n"));
++}
++
+ /// Возвращает отчёт: секции по уровням от Critical к Info, внутри секции
+ /// источники по алфавиту с суммой `count`. Для Critical и Warning выводятся
+ /// уникальные сообщения в порядке появления, для Info — только их число.
+@@ -19,6 +90,7 @@
+     let mut out = String::new();
+     out.push_str(&format!("=== {title} ===\n"));
+ 
++    // Группируем записи по уровню и источнику
+     let mut critical: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
+     let mut warning: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
+     let mut info: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
+@@ -30,73 +102,12 @@
+         }
+     }
+ 
+-    if !critical.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Critical));
+-        let mut total = 0;
+-        for (source, list) in &critical {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !warning.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Warning));
+-        let mut total = 0;
+-        for (source, list) in &warning {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !info.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Info));
+-        let mut total = 0;
+-        for (source, list) in &info {
+-            let mut n = 0;
+-            let mut messages: BTreeSet<&str> = BTreeSet::new();
+-            for entry in list {
+-                n += entry.count;
+-                messages.insert(&entry.message);
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  ({} сообщ.)\n",
+-                source,
+-                n,
+-                messages.len()
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
++    // Выводим секции в порядке Critical -> Warning -> Info
++    append_messages_section(&mut out, Level::Critical, &critical);
++    append_messages_section(&mut out, Level::Warning, &warning);
++    append_count_section(&mut out, Level::Info, &info);
+ 
++    // Выводим итоговую статистику
+     let all: i64 = entries.iter().map(|entry| entry.count).sum();
+     let sources: BTreeSet<&str> = entries.iter().map(|entry| entry.source.as_str()).collect();
+     out.push_str(&format!(
+@@ -142,4 +153,27 @@
+ ";
+         assert_eq!(got, want);
+     }
++
++    #[test]
++    fn message_order_and_deduplication() {
++        let got = format_report(
++            "test",
++            &[
++                entry("web", Level::Critical, "timeout", 1),
++                entry("web", Level::Critical, "error", 1),
++                entry("web", Level::Critical, "timeout", 1),
++                entry("db", Level::Warning, "slow", 1),
++                entry("db", Level::Warning, "slow", 1),
++                entry("api", Level::Info, "request", 1),
++                entry("api", Level::Info, "response", 1),
++                entry("api", Level::Info, "request", 1),
++            ],
++        );
++        // Check deduplication and order of appearance for Critical/Warning
++        assert!(got.contains("timeout; error"), "Messages should be deduplicated and in appearance order");
++        // Check that db warning count is correct
++        assert!(got.contains("db") && got.contains("2  slow"), "Warning section should have correct count");
++        // Check Info section shows message count
++        assert!(got.contains("(2 сообщ.)"), "Info section should show message count");
++    }
+ }
