@@ -1,0 +1,130 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r02-limits/src/lib.rs ws/skill-v1/r02-3/src/lib.rs
+--- base_r02-limits/src/lib.rs	2026-10-03 12:54:14.985310120 +0000
++++ ws/skill-v1/r02-3/src/lib.rs	2026-10-03 13:00:38.253978480 +0000
+@@ -15,6 +15,7 @@
+ const MAGIC: &[u8; 4] = b"PAK1";
+ const HEADER_LEN: usize = 8;
+ const ENTRY_LEN: usize = 12;
++const MAX_RECORDS: usize = 65536;
+ 
+ /// Ошибка разбора архива.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -25,6 +26,8 @@
+     Truncated,
+     /// Данные записи `index` выходят за конец архива.
+     OutOfBounds { index: usize },
++    /// Число записей превышает максимально допустимое.
++    TooManyRecords { count: u64 },
+ }
+ 
+ impl fmt::Display for Error {
+@@ -33,6 +36,9 @@
+             Self::BadMagic => write!(f, "не архив PAK1"),
+             Self::Truncated => write!(f, "архив обрезан"),
+             Self::OutOfBounds { index } => write!(f, "запись {index} выходит за конец архива"),
++            Self::TooManyRecords { count } => {
++                write!(f, "слишком много записей: {count} > {MAX_RECORDS}")
++            }
+         }
+     }
+ }
+@@ -64,7 +70,12 @@
+         if &input[..4] != MAGIC {
+             return Err(Error::BadMagic);
+         }
+-        let count = u32::from_le_bytes(input[4..8].try_into().unwrap()) as usize;
++        let count_u32 = u32::from_le_bytes(input[4..8].try_into().unwrap());
++        let count_u64 = count_u32 as u64;
++        if count_u64 > MAX_RECORDS as u64 {
++            return Err(Error::TooManyRecords { count: count_u64 });
++        }
++        let count = count_u32 as usize;
+ 
+         let mut entries = Vec::with_capacity(count);
+         let mut pos = HEADER_LEN;
+@@ -72,7 +83,8 @@
+             let Some(raw) = input.get(pos..pos + ENTRY_LEN) else {
+                 return Err(Error::Truncated);
+             };
+-            let offset = u64::from_le_bytes(raw[..8].try_into().unwrap()) as u32;
++            let offset_u64 = u64::from_le_bytes(raw[..8].try_into().unwrap());
++            let offset = u32::try_from(offset_u64).map_err(|_| Error::Truncated)?;
+             let len = u32::from_le_bytes(raw[8..].try_into().unwrap());
+             entries.push(Entry { offset, len });
+             pos += ENTRY_LEN;
+@@ -80,7 +92,11 @@
+ 
+         let data = &input[pos..];
+         for (index, entry) in entries.iter().enumerate() {
+-            if (entry.offset + entry.len) as usize > data.len() {
++            let end = entry
++                .offset
++                .checked_add(entry.len)
++                .ok_or(Error::Truncated)?;
++            if end as usize > data.len() {
+                 return Err(Error::OutOfBounds { index });
+             }
+         }
+@@ -101,7 +117,9 @@
+     pub fn get(&self, index: usize) -> Option<&'a [u8]> {
+         let entry = self.entries.get(index)?;
+         let start = entry.offset as usize;
+-        Some(&self.data[start..start + entry.len as usize])
++        let len = entry.len as usize;
++        let end = start.checked_add(len)?;
++        self.data.get(start..end)
+     }
+ }
+ 
+@@ -141,4 +159,51 @@
+             Some(Error::OutOfBounds { index: 0 })
+         );
+     }
++
++    #[test]
++    fn rejects_too_many_records() {
++        // 65537 записей - больше максимума
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&65537u32.to_le_bytes());
++        assert_eq!(
++            Archive::parse(&input).err(),
++            Some(Error::TooManyRecords { count: 65537 })
++        );
++    }
++
++    #[test]
++    fn rejects_offset_overflow() {
++        // Смещение больше u32::MAX
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&1u32.to_le_bytes()); // 1 запись
++        let big_offset = u64::MAX;
++        input.extend_from_slice(&big_offset.to_le_bytes());
++        input.extend_from_slice(&1u32.to_le_bytes()); // len = 1
++                                                      // Должно быть Truncated, так как offset не помещается в u32
++        assert_eq!(Archive::parse(&input).err(), Some(Error::Truncated));
++    }
++
++    #[test]
++    fn rejects_len_addition_overflow() {
++        // offset + len переполняется
++        let entries = vec![(u32::MAX as u64, 1)];
++        let input = archive(&entries, &[]);
++        assert_eq!(Archive::parse(&input).err(), Some(Error::Truncated));
++    }
++
++    #[test]
++    fn rejects_get_with_overflow() {
++        // Архив где offset + len переполнится - должен быть отклонен при парсинге
++        let entries = vec![(u32::MAX as u64 - 1, 2)];
++        let input = archive(&entries, &[0, 1, 2]);
++        assert_eq!(Archive::parse(&input).err(), Some(Error::Truncated));
++    }
++
++    #[test]
++    fn accepts_maximum_records() {
++        // Ровно 65536 записей - на границе лимита
++        let entries = vec![(0, 0); 65536];
++        let input = archive(&entries, &[]);
++        Archive::parse(&input).expect("должен принять ровно MAX_RECORDS");
++    }
+ }
