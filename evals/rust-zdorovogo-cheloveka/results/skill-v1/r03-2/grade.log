@@ -1,0 +1,20 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+ok   cargo test (с оценщиком)
+METRIC pedantic_new 2
+info pedantic: src/report.rs: warning: long literal lacking separators: help: consider: `100_000`
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 0
+METRIC int_as 0
+METRIC clone 0
+METRIC added 51
+METRIC removed 4
+METRIC size_vs_reference 2.75
+RESULT PASS

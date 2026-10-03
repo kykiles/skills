@@ -1,0 +1,20 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+FAIL cargo fmt --check: src/lib.rs
+ok   cargo build
+ok   cargo clippy -D warnings
+ok   cargo test (с оценщиком)
+METRIC pedantic_new 1
+info pedantic: src/lib.rs: warning: casts from `u32` to `u64` can be expressed infallibly using `From`
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 1
+METRIC int_as 3
+METRIC clone 0
+METRIC added 111
+METRIC removed 7
+METRIC size_vs_reference 5.13
+RESULT FAIL (1)

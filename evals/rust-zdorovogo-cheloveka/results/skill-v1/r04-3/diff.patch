@@ -1,0 +1,127 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r04-refactor/src/report.rs ws/skill-v1/r04-3/src/report.rs
+--- base_r04-refactor/src/report.rs	2026-10-03 12:57:10.358663684 +0000
++++ ws/skill-v1/r04-3/src/report.rs	2026-10-03 13:03:02.769987070 +0000
+@@ -30,72 +30,9 @@
+         }
+     }
+ 
+-    if !critical.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Critical));
+-        let mut total = 0;
+-        for (source, list) in &critical {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !warning.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Warning));
+-        let mut total = 0;
+-        for (source, list) in &warning {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !info.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Info));
+-        let mut total = 0;
+-        for (source, list) in &info {
+-            let mut n = 0;
+-            let mut messages: BTreeSet<&str> = BTreeSet::new();
+-            for entry in list {
+-                n += entry.count;
+-                messages.insert(&entry.message);
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  ({} сообщ.)\n",
+-                source,
+-                n,
+-                messages.len()
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
++    format_section(&mut out, Level::Critical, &critical);
++    format_section(&mut out, Level::Warning, &warning);
++    format_section(&mut out, Level::Info, &info);
+ 
+     let all: i64 = entries.iter().map(|entry| entry.count).sum();
+     let sources: BTreeSet<&str> = entries.iter().map(|entry| entry.source.as_str()).collect();
+@@ -106,6 +43,47 @@
+     out
+ }
+ 
++/// Форматирует одну секцию отчёта для заданного уровня важности.
++fn format_section(out: &mut String, level: Level, section: &BTreeMap<&str, Vec<&Entry>>) {
++    if section.is_empty() {
++        return;
++    }
++
++    out.push_str(&format!("\n[{}]\n", level));
++    let mut total = 0;
++
++    for (source, list) in section {
++        let mut n = 0;
++        let line_suffix = match level {
++            Level::Critical | Level::Warning => {
++                // Для Critical и Warning выводим уникальные сообщения в порядке появления
++                let mut messages: Vec<&str> = Vec::new();
++                for entry in list {
++                    n += entry.count;
++                    if !messages.contains(&entry.message.as_str()) {
++                        messages.push(&entry.message);
++                    }
++                }
++                messages.join("; ")
++            }
++            Level::Info => {
++                // Для Info выводим только количество уникальных сообщений
++                let mut messages: BTreeSet<&str> = BTreeSet::new();
++                for entry in list {
++                    n += entry.count;
++                    messages.insert(&entry.message);
++                }
++                format!("({} сообщ.)", messages.len())
++            }
++        };
++        total += n;
++
++        out.push_str(&format!("  {:<12} {:>5}  {}\n", source, n, line_suffix));
++    }
++
++    out.push_str(&format!("  итого: {total}\n"));
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;

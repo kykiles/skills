@@ -1,0 +1,34 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   не изменён README.md
+FAIL изменён или удалён src/export.rs
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+ok   публичные элементы не изменены (cargo doc)
+FAIL cargo test (с оценщиком)
+
+thread 'grader_edge_cases' (14979) panicked at tests/zz_grader.rs:173:9:
+assertion `left == right` failed: случай 2
+  left: "=== t ===\n\n[Warning]\n  s                3  a; b\n  итого: 3\n\nвсего событий: 3, источников: 1\n"
+ right: "=== t ===\n\n[Warning]\n  s                3  b; a\n  итого: 3\n\nвсего событий: 3, источников: 1\n"
+
+thread 'grader_same_output_as_original' (14981) panicked at tests/zz_grader.rs:150:9:
+assertion `left == right` failed: случай 0, entries: [
+    Entry {
+        source: "очередь",
+error: test failed, to rerun pass `--test zz_grader`
+METRIC pedantic_new 2
+info pedantic: src/report.rs: warning: variables can be used directly in the `format!` string
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 0
+METRIC int_as 0
+METRIC clone 0
+METRIC added 58
+METRIC removed 61
+METRIC size_vs_reference 1.01
+RESULT FAIL (2)

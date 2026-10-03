@@ -1,0 +1,25 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+FAIL cargo test (с оценщиком)
+
+thread 'grader_same_results_as_original' (2426) panicked at tests/zz_grader.rs:118:9:
+assertion `left == right` failed: top_paths, случай 0: "PUT /b  200\r\nGET\t/B  500 4294967296\nPOST /a  x  5\nGET\t/b 70000\t5\r\nPUT /b  +200\nPUT /a/b?x=1\t404\nPUT\t/a\t200\r\nPUT\t/a/b?x=1 x -1\textra\nGET /a/b?x=1  200\nPOST\t/\t200\t5  extra\nGET /путь  200\nPUT\t/путь  404\nGET  /путь\tx\nPUT / 200  4294967296  extra\nPUT  /B\t+200\nPOST  /a/b?x=1 404\t10\textra\r\nPOST /путь\t500\r\nGET /  200\t4294967296 extra\nPOST /путь 200 -1\nPOST\t/ 200 5 extra\nGET /  500  -1  extra\nPOST\t/путь 70000  4294967296\nPUT\t/путь\t70000\r\nGET /a/b?x=1\t500\t5  extra\nGET\t/путь\t+200 5  extra\nPUT\t/b  70000\r\nPOST /путь  404\t4294967296\nPUT  /  404\nPUT  /путь\t+200\r\nPOST /путь\t200\t5  extra\nPUT  /a 200\nPUT\t/a/b?x=1  x  10\nPUT\t/путь +200\nGET  /a/b?x=1\tx 5\r\nPUT\t/b  +200 -1 extra\n"
+  left: [("/", 4), ("/путь", 3)]
+ right: [("/B", 1), ("/путь", 1)]
+error: test failed, to rerun pass `--test zz_grader`
+METRIC pedantic_new 0
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 0
+METRIC int_as 0
+METRIC clone 0
+METRIC added 22
+METRIC removed 28
+METRIC size_vs_reference 0.98
+RESULT FAIL (1)

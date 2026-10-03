@@ -1,0 +1,80 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r05-holdout/src/lib.rs ws/skill-v1/r05-1/src/lib.rs
+--- base_r05-holdout/src/lib.rs	2026-10-03 12:57:27.094750165 +0000
++++ ws/skill-v1/r05-1/src/lib.rs	2026-10-03 13:03:06.901987316 +0000
+@@ -5,45 +5,37 @@
+ 
+ use std::collections::{BTreeMap, HashMap};
+ 
+-struct Request {
+-    path: String,
++struct Request<'a> {
++    path: &'a str,
+     status: u16,
+     bytes: u64,
+ }
+ 
+-fn parse_line(line: String) -> Option<Request> {
+-    let fields: Vec<String> = line.split_whitespace().map(|f| f.to_string()).collect();
+-    if fields.len() != 4 {
+-        return None;
+-    }
++fn parse_line(line: &str) -> Option<Request<'_>> {
++    let mut fields = line.split_whitespace();
++    let _ = fields.next()?;
++    let path = fields.next()?;
++    let status = fields.next()?.parse().ok()?;
++    let bytes = fields.next()?.parse().ok()?;
+     Some(Request {
+-        path: fields[1].clone(),
+-        status: fields[2].parse().ok()?,
+-        bytes: fields[3].parse().ok()?,
++        path,
++        status,
++        bytes,
+     })
+ }
+ 
+-fn requests(log: &str) -> Vec<Request> {
+-    let lines: Vec<String> = log.lines().map(|line| line.to_string()).collect();
+-    let mut out = Vec::new();
+-    for line in &lines {
+-        if let Some(request) = parse_line(line.clone()) {
+-            out.push(request);
+-        }
+-    }
+-    out
+-}
+-
+ /// `n` самых частых путей с числом запросов: по убыванию числа, при равенстве —
+ /// по алфавиту.
+ pub fn top_paths(log: &str, n: usize) -> Vec<(String, usize)> {
+-    let mut counts: HashMap<String, usize> = HashMap::new();
+-    for request in requests(log) {
+-        *counts.entry(request.path.clone()).or_insert(0) += 1;
++    let mut counts: HashMap<&str, usize> = HashMap::new();
++    for line in log.lines() {
++        if let Some(request) = parse_line(line) {
++            *counts.entry(request.path).or_insert(0) += 1;
++        }
+     }
+     let mut sorted: Vec<(String, usize)> = counts
+-        .iter()
+-        .map(|(path, count)| (path.clone(), *count))
++        .into_iter()
++        .map(|(path, count)| (path.to_string(), count))
+         .collect();
+     sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+     sorted.truncate(n);
+@@ -53,8 +45,10 @@
+ /// Сумма байт в ответах по каждому коду ответа.
+ pub fn bytes_by_status(log: &str) -> BTreeMap<u16, u64> {
+     let mut totals = BTreeMap::new();
+-    for request in requests(log) {
+-        *totals.entry(request.status).or_insert(0) += request.bytes;
++    for line in log.lines() {
++        if let Some(request) = parse_line(line) {
++            *totals.entry(request.status).or_insert(0) += request.bytes;
++        }
+     }
+     totals
+ }

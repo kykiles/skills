@@ -1,0 +1,20 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+ok   cargo test (с оценщиком)
+METRIC pedantic_new 1
+info pedantic: src/lib.rs: warning: casting `usize` to `u32` may truncate the value on targets with 64-bit wide pointers
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 3
+METRIC int_as 2
+METRIC clone 0
+METRIC added 70
+METRIC removed 6
+METRIC size_vs_reference 3.30
+RESULT PASS

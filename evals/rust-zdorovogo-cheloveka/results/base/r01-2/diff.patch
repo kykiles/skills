@@ -1,0 +1,151 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r01-errors/src/lib.rs ws/base/r01-2/src/lib.rs
+--- base_r01-errors/src/lib.rs	2026-10-03 12:53:56.549128154 +0000
++++ ws/base/r01-2/src/lib.rs	2026-10-03 12:53:01.793951346 +0000
+@@ -37,6 +37,13 @@
+     Syntax { line: usize },
+     /// Ключ не поддерживается.
+     UnknownKey { line: usize, key: String },
++    /// Неверное значение ключа.
++    InvalidValue {
++        line: usize,
++        key: String,
++        value: String,
++        reason: String,
++    },
+ }
+ 
+ impl fmt::Display for ConfigError {
+@@ -45,6 +52,15 @@
+             Self::Read { path, .. } => write!(f, "не удалось прочитать {}", path.display()),
+             Self::Syntax { line } => write!(f, "строка {line}: ожидается `ключ = значение`"),
+             Self::UnknownKey { line, key } => write!(f, "строка {line}: неизвестный ключ `{key}`"),
++            Self::InvalidValue {
++                line,
++                key,
++                value,
++                reason,
++            } => write!(
++                f,
++                "строка {line}: ключ `{key}` = `{value}`: {reason}"
++            ),
+         }
+     }
+ }
+@@ -53,7 +69,7 @@
+     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+         match self {
+             Self::Read { source, .. } => Some(source),
+-            Self::Syntax { .. } | Self::UnknownKey { .. } => None,
++            Self::Syntax { .. } | Self::UnknownKey { .. } | Self::InvalidValue { .. } => None,
+         }
+     }
+ }
+@@ -92,9 +108,31 @@
+         let (key, value) = (key.trim(), value.trim());
+         match key {
+             "listen" => config.listen = value.to_string(),
+-            "port" => config.port = value.parse().unwrap(),
+-            "timeout_ms" => config.timeout = Duration::from_millis(value.parse().unwrap()),
+-            "verbose" => config.verbose = value.parse().unwrap(),
++            "port" => {
++                config.port = value.parse().map_err(|_| ConfigError::InvalidValue {
++                    line,
++                    key: key.to_string(),
++                    value: value.to_string(),
++                    reason: "должно быть число от 0 до 65535".to_string(),
++                })?
++            }
++            "timeout_ms" => {
++                let millis: u64 = value.parse().map_err(|_| ConfigError::InvalidValue {
++                    line,
++                    key: key.to_string(),
++                    value: value.to_string(),
++                    reason: "должно быть число (миллисекунды)".to_string(),
++                })?;
++                config.timeout = Duration::from_millis(millis);
++            }
++            "verbose" => {
++                config.verbose = value.parse().map_err(|_| ConfigError::InvalidValue {
++                    line,
++                    key: key.to_string(),
++                    value: value.to_string(),
++                    reason: "должно быть true или false".to_string(),
++                })?
++            }
+             _ => {
+                 return Err(ConfigError::UnknownKey {
+                     line,
+@@ -131,4 +169,73 @@
+             Err(ConfigError::UnknownKey { line: 2, .. })
+         ));
+     }
++
++    #[test]
++    fn rejects_invalid_port() {
++        let result = parse("port = 80o\n");
++        assert!(matches!(
++            result,
++            Err(ConfigError::InvalidValue { line: 1, .. })
++        ));
++        if let Err(ConfigError::InvalidValue {
++            line,
++            key,
++            value,
++            ..
++        }) = result
++        {
++            assert_eq!(line, 1);
++            assert_eq!(key, "port");
++            assert_eq!(value, "80o");
++        }
++    }
++
++    #[test]
++    fn rejects_invalid_timeout_ms() {
++        let result = parse("timeout_ms = abc\n");
++        assert!(matches!(
++            result,
++            Err(ConfigError::InvalidValue { line: 1, .. })
++        ));
++        if let Err(ConfigError::InvalidValue {
++            line,
++            key,
++            value,
++            ..
++        }) = result
++        {
++            assert_eq!(line, 1);
++            assert_eq!(key, "timeout_ms");
++            assert_eq!(value, "abc");
++        }
++    }
++
++    #[test]
++    fn rejects_invalid_verbose() {
++        let result = parse("verbose = maybe\n");
++        assert!(matches!(
++            result,
++            Err(ConfigError::InvalidValue { line: 1, .. })
++        ));
++        if let Err(ConfigError::InvalidValue {
++            line,
++            key,
++            value,
++            ..
++        }) = result
++        {
++            assert_eq!(line, 1);
++            assert_eq!(key, "verbose");
++            assert_eq!(value, "maybe");
++        }
++    }
++
++    #[test]
++    fn error_message_includes_details() {
++        let error = parse("port = 80o\n").unwrap_err();
++        let msg = error.to_string();
++        assert!(msg.contains("строка 1"));
++        assert!(msg.contains("port"));
++        assert!(msg.contains("80o"));
++    }
+ }

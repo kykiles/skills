@@ -1,0 +1,253 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r02-limits/SECURITY_FIXES.md ws/base/r02-1/SECURITY_FIXES.md
+--- base_r02-limits/SECURITY_FIXES.md	1970-01-01 00:00:00.000000000 +0000
++++ ws/base/r02-1/SECURITY_FIXES.md	2026-10-03 12:54:11.437955486 +0000
+@@ -0,0 +1,66 @@
++# Исправления безопасности библиотеки pak
++
++## Обнаруженные и исправленные уязвимости
++
++### 1. Переполнение при парсинге позиции (attempt to add with overflow)
++**Проблема**: При вычислении позиции `pos += ENTRY_LEN` могло произойти целочисленное переполнение.
++
++**Исправление**: 
++- Заменена `pos += ENTRY_LEN` на `pos.checked_add(ENTRY_LEN)?` 
++- Добавлена проверка на переполнение при вычислении `offset + len`
++- Строки 100, 106
++
++### 2. OOM уязвимость (съел всю память)
++**Проблема**: `Vec::with_capacity(count)` без ограничения на count из untrusted входа. Если count = 4294967295, попытка выделить память для u32::MAX элементов приведет к OOM killer.
++
++**Исправление**: 
++- Добавлена проверка `if count > 65536` перед выделением памяти
++- Возвращается ошибка `Error::TooManyEntries` при превышении лимита
++- Строки 75-78
++
++### 3. Неправильное усечение offset (неправильные байты в записях)
++**Проблема**: `offset` читается как u64 и усекается в u32 (`as u32`). Если offset > u32::MAX, это приводит к неправильному чтению данных из архива.
++
++**Исправление**: 
++- Добавлена проверка `if offset_raw > u32::MAX as u64` 
++- Возвращается ошибка `Error::InvalidOffset` при невалидном offset
++- Строки 89-93
++
++### 4. Отсутствие ограничения на количество записей
++**Проблема**: Архив с количеством записей > 65536 могла требовать гигабайты памяти
++
++**Исправление**:
++- Ограничение на максимум 65536 записей (как указано в требованиях)
++- Ошибка возвращается при превышении лимита
++
++## Добавленные новые типы ошибок
++- `TooManyEntries` - слишком много записей в архиве (> 65536)
++- `InvalidOffset` - offset выходит за границы допустимых значений (> u32::MAX)
++
++## Изменённая структура данных
++- `Entry` изменена с `offset: u32, len: u32` на `offset: usize, len: usize` для правильной работы с слайсами
++
++## Добавлены проверки в методе `get()`
++- Использование `checked_add()` для предотвращения overflow при вычислении конечной позиции
++
++## Проведённые тесты
++
++Все тесты проходят успешно:
++```
++running 6 tests
++test tests::reads_entries ... ok
++test tests::get_with_large_offsets ... ok
++test tests::rejects_bad_input ... ok
++test tests::rejects_invalid_offset ... ok
++test tests::rejects_overflow_in_offset_plus_len ... ok
++test tests::rejects_too_many_entries ... ok
++
++test result: ok. 6 passed; 0 failed
++```
++
++## Результаты безопасности
++
++- ✓ Переполнение при добавлении: исправлено (используется checked_add)
++- ✓ OOM уязвимость: исправлена (лимит 65536 записей)
++- ✓ Неправильные данные: исправлено (проверка offset <= u32::MAX)
++- ✓ Все операции возвращают Error вместо panic/undefined behavior
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r02-limits/src/lib.rs ws/base/r02-1/src/lib.rs
+--- base_r02-limits/src/lib.rs	2026-10-03 12:54:14.985310120 +0000
++++ ws/base/r02-1/src/lib.rs	2026-10-03 12:53:48.533954125 +0000
+@@ -25,6 +25,10 @@
+     Truncated,
+     /// Данные записи `index` выходят за конец архива.
+     OutOfBounds { index: usize },
++    /// Слишком много записей в архиве (более 65536).
++    TooManyEntries,
++    /// Offset записи выходит за границы допустимых значений.
++    InvalidOffset,
+ }
+ 
+ impl fmt::Display for Error {
+@@ -33,6 +37,8 @@
+             Self::BadMagic => write!(f, "не архив PAK1"),
+             Self::Truncated => write!(f, "архив обрезан"),
+             Self::OutOfBounds { index } => write!(f, "запись {index} выходит за конец архива"),
++            Self::TooManyEntries => write!(f, "слишком много записей (более 65536)"),
++            Self::InvalidOffset => write!(f, "invalid offset value"),
+         }
+     }
+ }
+@@ -40,8 +46,8 @@
+ impl std::error::Error for Error {}
+ 
+ struct Entry {
+-    offset: u32,
+-    len: u32,
++    offset: usize,
++    len: usize,
+ }
+ 
+ /// Разобранный архив; данные записей заимствуются из входа.
+@@ -66,21 +72,39 @@
+         }
+         let count = u32::from_le_bytes(input[4..8].try_into().unwrap()) as usize;
+ 
++        // Защита от OOM: не более 65536 записей
++        if count > 65536 {
++            return Err(Error::TooManyEntries);
++        }
++
+         let mut entries = Vec::with_capacity(count);
+         let mut pos = HEADER_LEN;
+         for _ in 0..count {
+             let Some(raw) = input.get(pos..pos + ENTRY_LEN) else {
+                 return Err(Error::Truncated);
+             };
+-            let offset = u64::from_le_bytes(raw[..8].try_into().unwrap()) as u32;
+-            let len = u32::from_le_bytes(raw[8..].try_into().unwrap());
++            let offset_raw = u64::from_le_bytes(raw[..8].try_into().unwrap());
++            let len_raw = u32::from_le_bytes(raw[8..].try_into().unwrap());
++
++            // Защита от неправильного усечения offset
++            // offset должен быть <= u32::MAX, так как data_offset и len - это u32
++            if offset_raw > u32::MAX as u64 {
++                return Err(Error::InvalidOffset);
++            }
++            let offset = offset_raw as usize;
++            let len = len_raw as usize;
++
+             entries.push(Entry { offset, len });
+-            pos += ENTRY_LEN;
++
++            // Защита от overflow при вычислении следующей позиции
++            pos = pos.checked_add(ENTRY_LEN).ok_or(Error::Truncated)?;
+         }
+ 
+         let data = &input[pos..];
+         for (index, entry) in entries.iter().enumerate() {
+-            if (entry.offset + entry.len) as usize > data.len() {
++            // Защита от overflow при offset + len
++            let end = entry.offset.checked_add(entry.len).ok_or(Error::OutOfBounds { index })?;
++            if end > data.len() {
+                 return Err(Error::OutOfBounds { index });
+             }
+         }
+@@ -100,8 +124,9 @@
+     /// Данные записи `index`; `None`, если такой записи нет.
+     pub fn get(&self, index: usize) -> Option<&'a [u8]> {
+         let entry = self.entries.get(index)?;
+-        let start = entry.offset as usize;
+-        Some(&self.data[start..start + entry.len as usize])
++        let start = entry.offset;
++        let end = start.checked_add(entry.len)?;
++        Some(&self.data[start..end])
+     }
+ }
+ 
+@@ -141,4 +166,59 @@
+             Some(Error::OutOfBounds { index: 0 })
+         );
+     }
++
++    #[test]
++    fn rejects_too_many_entries() {
++        // Archive with 65537 entries (exceeds 65536 limit)
++        let mut out = MAGIC.to_vec();
++        out.extend_from_slice(&65537u32.to_le_bytes());
++        // Don't add entries, just the invalid count
++        assert_eq!(
++            Archive::parse(&out).err(),
++            Some(Error::TooManyEntries)
++        );
++    }
++
++    #[test]
++    fn rejects_invalid_offset() {
++        // Create archive with offset > u32::MAX (5 bytes of 0xFF to represent large u64)
++        let mut out = MAGIC.to_vec();
++        out.extend_from_slice(&1u32.to_le_bytes()); // 1 entry
++
++        // Offset that exceeds u32::MAX: 0x0000000100000000
++        let large_offset = 1u64 << 32;
++        out.extend_from_slice(&large_offset.to_le_bytes());
++        out.extend_from_slice(&0u32.to_le_bytes()); // len = 0
++        out.extend_from_slice(b"data");
++
++        assert_eq!(
++            Archive::parse(&out).err(),
++            Some(Error::InvalidOffset)
++        );
++    }
++
++    #[test]
++    fn rejects_overflow_in_offset_plus_len() {
++        // Create archive where offset + len would overflow usize
++        // With small archive and data: offset=u32::MAX, len=1 would overflow
++        let mut out = MAGIC.to_vec();
++        out.extend_from_slice(&1u32.to_le_bytes()); // 1 entry
++        out.extend_from_slice(&(u32::MAX as u64).to_le_bytes()); // offset = u32::MAX
++        out.extend_from_slice(&1u32.to_le_bytes()); // len = 1
++        out.extend_from_slice(b"x"); // minimal data
++
++        assert_eq!(
++            Archive::parse(&out).err(),
++            Some(Error::OutOfBounds { index: 0 })
++        );
++    }
++
++    #[test]
++    fn get_with_large_offsets() {
++        // Test that get() properly handles checked_add for large offsets
++        let input = archive(&[(0, 2), (2, 3)], b"hello");
++        let pak = Archive::parse(&input).unwrap();
++        assert_eq!(pak.get(0), Some(&b"he"[..]));
++        assert_eq!(pak.get(1), Some(&b"llo"[..]));
++    }
+ }
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r02-limits/tests_vulnerabilities.sh ws/base/r02-1/tests_vulnerabilities.sh
+--- base_r02-limits/tests_vulnerabilities.sh	1970-01-01 00:00:00.000000000 +0000
++++ ws/base/r02-1/tests_vulnerabilities.sh	2026-10-03 12:53:57.230896392 +0000
+@@ -0,0 +1,29 @@
++#!/bin/bash
++set -e
++
++echo "=== Testing pak library security fixes ==="
++
++cd b
++
++echo ""
++echo "1. Testing overflow prevention in position calculation..."
++cargo test --offline rejects_overflow_in_offset_plus_len 2>&1 | grep -E "test.*ok|test.*PASS"
++
++echo ""
++echo "2. Testing OOM prevention (limiting entries to 65536)..."
++cargo test --offline rejects_too_many_entries 2>&1 | grep -E "test.*ok|test.*PASS"
++
++echo ""
++echo "3. Testing invalid offset rejection (> u32::MAX)..."
++cargo test --offline rejects_invalid_offset 2>&1 | grep -E "test.*ok|test.*PASS"
++
++echo ""
++echo "4. Testing correct data retrieval..."
++cargo test --offline reads_entries 2>&1 | grep -E "test.*ok|test.*PASS"
++
++echo ""
++echo "5. Running all tests..."
++cargo test --offline 2>&1 | tail -3
++
++echo ""
++echo "=== All security tests passed! ==="

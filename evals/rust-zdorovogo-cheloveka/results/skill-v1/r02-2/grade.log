@@ -1,0 +1,21 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+ok   cargo test (с оценщиком)
+METRIC pedantic_new 2
+info pedantic: src/lib.rs: warning: casts from `u32` to `u64` can be expressed infallibly using `From`
+info pedantic: src/lib.rs: warning: long literal lacking separators: help: consider: `100_000_u32`
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 1
+METRIC int_as 1
+METRIC clone 0
+METRIC added 74
+METRIC removed 4
+METRIC size_vs_reference 3.39
+RESULT PASS

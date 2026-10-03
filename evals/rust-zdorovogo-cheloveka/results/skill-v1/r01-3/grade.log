@@ -1,0 +1,40 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+FAIL cargo test (с оценщиком)
+
+thread 'grader_bad_port' (7693) panicked at tests/zz_grader.rs:45:5:
+port = 80o: исходная ошибка core::num::error::ParseIntError потеряна в цепочке source(): строка 12: ключ `port`: ожидается число от 0 до 65535
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+
+thread 'grader_bad_timeout' (7694) panicked at tests/zz_grader.rs:45:5:
+timeout_ms = -5: исходная ошибка core::num::error::ParseIntError потеряна в цепочке source(): строка 12: ключ `timeout_ms`: ожидается целое число (миллисекунды)
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+
+thread 'grader_bad_verbose' (7695) panicked at tests/zz_grader.rs:45:5:
+verbose = yes: исходная ошибка core::str::error::ParseBoolError потеряна в цепочке source(): строка 12: ключ `verbose`: ожидается `true` или `false`
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+
+thread 'grader_binary_reports_bad_value' (7698) panicked at tests/zz_grader.rs:118:5:
+assertion `left == right` failed: текст исходной ошибки должен быть в выводе ровно один раз:
+ошибка: строка 12: ключ `port`: ожидается число от 0 до 65535
+
+error: test failed, to rerun pass `--test zz_grader`
+METRIC pedantic_new 0
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 0
+METRIC int_as 0
+METRIC clone 0
+METRIC added 56
+METRIC removed 4
+METRIC size_vs_reference 1.76
+RESULT FAIL (1)
