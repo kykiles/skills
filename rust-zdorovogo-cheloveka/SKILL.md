@@ -15,7 +15,7 @@ description: "Пиши, исправляй, рефактори, тестируй
 |------|-------------|
 | [ownership.md](references/ownership.md) | `&str` или `String`, срезы вместо `&Vec`/`&String`, `clone()`, цикл или итераторы, времена жизни |
 | [errors.md](references/errors.md) | `Result` или паника (`unwrap`, `expect`, индексация), `?` или `match`, тип ошибки, `# Errors`/`# Panics`, переполнение, `as`, размеры и лимиты из внешних данных |
-| [api.md](references/api.md) | структура кода и модули, имена, `derive`, документация, совместимость, `impl Trait`/`dyn`/`Into`/`Cow`, аргументы-флаги `bool`/`Option`, `match` по enum, трейты и async-методы в них |
+| [api.md](references/api.md) | структура кода и модули, имена и комментарии, `derive`, документация, совместимость, `impl Trait`/`dyn`/`Into`/`Cow`, аргументы-флаги `bool`/`Option`, `match` по enum, трейты и async-методы в них |
 | [unsafe-ffi-async.md](references/unsafe-ffi-async.md) | `unsafe`, FFI и `extern "C"`, async: рантайм, блокирующие вызовы, мьютекс через `.await` |
 | [testing.md](references/testing.md) | написание и оценка тестов |
 | [project.md](references/project.md) | новые зависимости и API крейтов, MSRV, `cargo fmt`, Clippy, `[lints]`, подавление линтов (`#[expect]`, `#[allow]`) |
@@ -47,6 +47,7 @@ description: "Пиши, исправляй, рефактори, тестируй
 - Новый `unsafe` без `// SAFETY:`; блокирующий вызов или guard `std::sync::Mutex` через `.await`.
 - Подавление линта через `#[allow]` на модуле вместо `#[expect(…, reason = "…")]` на выражении или функции.
 - В правке остались `dbg!`, отладочный `println!`, закомментированный код или `TODO` без задачи.
+- Комментарий пересказывает код, а не объясняет «почему»; вложенные `if let`/`match` вместо раннего выхода (`?`, `return`, `let … else`); имена `get_x`, `data`, `info`, `manager` вместо `as_`/`to_`/`into_` и геттера без `get_` ([api.md](references/api.md#структура-и-имена)).
 - Тест без причины сравнивает поля по одному вместо объекта целиком или меняет переменные окружения процесса.
 
 ## После изменения
