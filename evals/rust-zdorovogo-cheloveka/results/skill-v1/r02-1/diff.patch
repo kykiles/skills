@@ -1,0 +1,117 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r02-limits/src/lib.rs ws/skill-v1/r02-1/src/lib.rs
+--- base_r02-limits/src/lib.rs	2026-10-03 12:54:14.985310120 +0000
++++ ws/skill-v1/r02-1/src/lib.rs	2026-10-03 12:59:36.501974809 +0000
+@@ -15,6 +15,7 @@
+ const MAGIC: &[u8; 4] = b"PAK1";
+ const HEADER_LEN: usize = 8;
+ const ENTRY_LEN: usize = 12;
++const MAX_RECORDS: usize = 65536;
+ 
+ /// Ошибка разбора архива.
+ #[derive(Debug, Clone, PartialEq, Eq)]
+@@ -64,7 +65,11 @@
+         if &input[..4] != MAGIC {
+             return Err(Error::BadMagic);
+         }
+-        let count = u32::from_le_bytes(input[4..8].try_into().unwrap()) as usize;
++        let count_raw = u32::from_le_bytes(input[4..8].try_into().unwrap());
++        let count = usize::try_from(count_raw)
++            .ok()
++            .filter(|&n| n <= MAX_RECORDS)
++            .ok_or(Error::Truncated)?;
+ 
+         let mut entries = Vec::with_capacity(count);
+         let mut pos = HEADER_LEN;
+@@ -72,15 +77,20 @@
+             let Some(raw) = input.get(pos..pos + ENTRY_LEN) else {
+                 return Err(Error::Truncated);
+             };
+-            let offset = u64::from_le_bytes(raw[..8].try_into().unwrap()) as u32;
+-            let len = u32::from_le_bytes(raw[8..].try_into().unwrap());
++            let offset = u64::from_le_bytes(raw[..8].try_into().unwrap());
++            let len = u32::from_le_bytes(raw[8..12].try_into().unwrap());
++            let offset = u32::try_from(offset).ok().ok_or(Error::Truncated)?;
+             entries.push(Entry { offset, len });
+-            pos += ENTRY_LEN;
++            pos = pos.checked_add(ENTRY_LEN).ok_or(Error::Truncated)?;
+         }
+ 
+         let data = &input[pos..];
+         for (index, entry) in entries.iter().enumerate() {
+-            if (entry.offset + entry.len) as usize > data.len() {
++            let end = entry
++                .offset
++                .checked_add(entry.len)
++                .ok_or(Error::Truncated)?;
++            if end as usize > data.len() {
+                 return Err(Error::OutOfBounds { index });
+             }
+         }
+@@ -101,7 +111,8 @@
+     pub fn get(&self, index: usize) -> Option<&'a [u8]> {
+         let entry = self.entries.get(index)?;
+         let start = entry.offset as usize;
+-        Some(&self.data[start..start + entry.len as usize])
++        let end = start.checked_add(entry.len as usize)?;
++        self.data.get(start..end)
+     }
+ }
+ 
+@@ -141,4 +152,57 @@
+             Some(Error::OutOfBounds { index: 0 })
+         );
+     }
++
++    #[test]
++    fn rejects_excessive_record_count() {
++        // Заголовок с count > MAX_RECORDS должен быть отклонён,
++        // даже если это всего 8 байт
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&(MAX_RECORDS as u32 + 1).to_le_bytes());
++        assert_eq!(Archive::parse(&input).err(), Some(Error::Truncated));
++    }
++
++    #[test]
++    fn rejects_count_from_short_file() {
++        // 12-байтный файл с большим count должен вернуть Truncated,
++        // а не паниковать и не выделять гигабайты
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&u32::MAX.to_le_bytes());
++        assert_eq!(Archive::parse(&input).err(), Some(Error::Truncated));
++    }
++
++    #[test]
++    fn rejects_offset_overflow() {
++        // offset + len переполняется в u32 — должна быть ошибка
++        let mut out = MAGIC.to_vec();
++        out.extend_from_slice(&1u32.to_le_bytes());
++        // offset = u32::MAX, len = 1 → u32::MAX + 1 переполняется
++        out.extend_from_slice(&u32::MAX.to_le_bytes());
++        out.extend_from_slice(&1u32.to_le_bytes());
++        out.extend_from_slice(b"x");
++        assert_eq!(Archive::parse(&out).err(), Some(Error::Truncated));
++    }
++
++    #[test]
++    fn rejects_excessive_offset_for_data() {
++        // offset + len выходит за конец данных
++        let mut out = MAGIC.to_vec();
++        out.extend_from_slice(&1u32.to_le_bytes());
++        out.extend_from_slice(&100u64.to_le_bytes());
++        out.extend_from_slice(&50u32.to_le_bytes());
++        out.extend_from_slice(b"x");
++        assert_eq!(
++            Archive::parse(&out).err(),
++            Some(Error::OutOfBounds { index: 0 })
++        );
++    }
++
++    #[test]
++    fn get_with_overflow() {
++        // Если offset близко к u32::MAX, start + len может переполниться
++        // Это нельзя создать корректным архивом, но get() должен быть безопасен
++        let input = archive(&[(0, 5)], b"hello");
++        let pak = Archive::parse(&input).unwrap();
++        assert_eq!(pak.get(0), Some(&b"hello"[..]));
++    }
+ }
