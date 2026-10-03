@@ -1,11 +1,11 @@
 ---
 name: "rust-zdorovogo-cheloveka"
-description: "Пиши, исправляй, рефактори и тестируй Rust-код (.rs, Cargo.toml) минимальными правками с учётом владения, ошибок, edition, MSRV, стиля и проверок проекта."
+description: "Пиши, исправляй, рефактори, тестируй и проверяй Rust-код (.rs, Cargo.toml) минимальными правками с учётом владения, ошибок, edition, MSRV, зависимостей, стиля и проверок проекта."
 ---
 
 # Rust здорового человека
 
-Работай как внимательный сопровождающий проекта: сначала пойми контракт, затем внеси минимальную правку и проверь её. Выбирай конструкции по смыслу и требованиям владения, а не по универсальным запретам. Когда затронуты строки, срезы, клонирование, паники, ошибки, сигнатуры, обход коллекций, времена жизни, `unsafe`, async, аргументы-флаги, `match`, трейты, подавление линтов или тесты, сверяйся с разделом «Правила выбора» ниже.
+Работай как внимательный сопровождающий проекта: сначала пойми контракт, затем внеси минимальную правку и проверь её. Выбирай конструкции по смыслу и требованиям владения, а не по универсальным запретам. Когда затронуты строки, срезы, клонирование, паники, ошибки, сигнатуры, обход коллекций, времена жизни, `unsafe`, FFI, async, аргументы-флаги, `match`, трейты, подавление линтов, тесты, арифметика, приведения `as` или размеры из внешних данных, сверяйся с разделом «Правила выбора» ниже.
 
 ## Перед изменением
 
@@ -26,13 +26,14 @@ description: "Пиши, исправляй, рефактори и тестиру
 - Не обобщай сигнатуры заранее: `impl Trait`, `Into`, `AsRef`, `Cow` и `dyn` — по конкретной потребности.
 - Не добавляй `unsafe`, явные времена жизни и новые async-зависимости без необходимости; в async-коде следуй рантайму проекта и не блокируй поток.
 - Следуй стилю соседнего кода. Меняй только строки, необходимые для задачи; убери импорты и переменные, ставшие лишними вследствие своей правки. Не обновляй edition, MSRV, зависимости, lockfile или соседние модули «заодно». Не добавляй крейты (`thiserror`, `anyhow` и т. п.) без просьбы пользователя, если их ещё нет в проекте.
+- Модели выдумывают и путают имена крейтов, и такое имя может оказаться занято чужим пакетом. Перед добавлением зависимости проверь её через `cargo info <крейт>` или страницу на crates.io: крейт существует, его репозиторий и описание соответствуют задаче, у него есть история выпусков и загрузок. В отчёте назови каждую новую зависимость и причину.
 - Правило, которое умеет проверять компилятор или Clippy, надёжнее закрепить в `[lints]`/`clippy.toml`, чем в тексте. Если такое правило раз за разом нарушается, предложи пользователю линт — это изменение конфигурации проекта, а не часть текущей правки.
 
 ## После изменения
 
 1. Запусти относящийся к задаче тест или сценарий, затем значимые тесты затронутого пакета (`cargo test -p <пакет>`; для библиотек это включает doc-тесты). Используй закреплённые features и toolchain; если CI проверяет несколько наборов features и правка их касается, повтори проверку для них.
 2. Если проект заявляет MSRV (`rust-version`) и нужный компилятор установлен, проверь совместимость: `cargo +<rust-version> check -p <пакет> --locked`. Успешная сборка на более новой версии совместимости не доказывает; не устанавливай toolchain без согласия пользователя — просто сообщи, что проверка не проведена.
-3. Если `Cargo.lock` уже есть и зависимости не меняются, используй `--locked` при Cargo-проверках. Проверь форматирование командой проекта, например `cargo fmt --all -- --check`; при уместности запусти Clippy для затронутого пакета (`cargo clippy -p <пакет> --all-targets`). Не выдавай предупреждения, существовавшие до правки, за результат своей работы и не считай их своими. Форматирование поведения не меняет, поэтому после `cargo fmt` тесты не повторяй; после `cargo clippy --fix` просмотри diff и повтори тесты, если исправление затронуло логику. Cargo может долго ждать блокировку каталога сборки (`Blocking waiting for file lock`) — это нормально, дождись завершения команды.
+3. Если `Cargo.lock` уже есть и зависимости не меняются, используй `--locked` при Cargo-проверках. Проверь форматирование командой проекта, например `cargo fmt --all -- --check`; при уместности запусти Clippy для затронутого пакета (`cargo clippy -p <пакет> --all-targets`). Не выдавай предупреждения, существовавшие до правки, за результат своей работы и не считай их своими. Форматирование поведения не меняет, поэтому после `cargo fmt` тесты не повторяй; после `cargo clippy --fix` просмотри diff и повтори тесты, если исправление затронуло логику. Если правка меняет зависимости, а в проекте настроены `cargo deny` или `cargo audit` (есть `deny.toml` или вызов в CI), запусти их. Cargo может долго ждать блокировку каталога сборки (`Blocking waiting for file lock`) — это нормально, дождись завершения команды.
 4. Просмотри `git status --short`, `git diff --stat`, `git diff` и `git diff --check`. Сравни с начальным состоянием; убедись, что каждая твоя строка относится к задаче и что конфигурация проекта не изменилась случайно. Не стирай чужие незавершённые изменения.
 5. Коротко сообщи, что изменено и почему, какие команды прошли, что не удалось проверить и по какой причине. Не называй непроведённые проверки успешными.
 
@@ -266,7 +267,9 @@ fn total_area(shapes: &[Box<dyn Shape>]) -> f64 {
 
 **Времена жизни.** Полагайся на правила элизии; указывай явно, только когда компилятор требует или когда возвращаемая ссылка связана лишь с одним из нескольких входов. Не храни ссылки в структурах, чтобы избежать одного `clone()`, — это распространяет параметр времени жизни на всех пользователей структуры. Ограничение `T: 'static` означает «не содержит нестатичных ссылок», а не «живёт вечно».
 
-**`unsafe`.** Не вводи его без явной необходимости (FFI, доказанная измерением потребность в производительности, отсутствие безопасной альтернативы) и согласия пользователя. Каждый `unsafe`-блок сопровождай комментарием `// SAFETY:` о том, какие условия выполняются и почему; у `unsafe fn` — раздел `# Safety` в документации. Правя существующий `unsafe`-код, сохрани его инварианты и перечитай комментарии. Если проект использует Miri, прогони затронутые тесты через `cargo +nightly miri test`.
+**`unsafe`.** Не вводи его без явной необходимости (FFI, доказанная измерением потребность в производительности, отсутствие безопасной альтернативы) и согласия пользователя. Каждый `unsafe`-блок сопровождай комментарием `// SAFETY:` о том, какие условия выполняются и почему; у `unsafe fn` — раздел `# Safety` в документации. Держи `unsafe` в небольшом модуле за безопасным API, чтобы инвариант проверялся в одном месте. Правя существующий `unsafe`-код, сохрани его инварианты и перечитай комментарии. Если проект использует Miri, прогони затронутые тесты через `cargo +nightly miri test`.
+
+**FFI.** Паника не должна выходить из Rust-функции, которую вызывает C: начиная с Rust 1.81 это аварийно завершает процесс. Если вызывающая сторона должна получить код ошибки, а не падение, оберни тело `extern "C" fn` в `std::panic::catch_unwind` и преобразуй панику в код ошибки; при `panic = "abort"` в профиле сборки `catch_unwind` панику не перехватит. Указатели из C проверяй на null до разыменования, строки принимай через `CStr::from_ptr` и не храни ссылки на чужую память дольше вызова.
 
 **Async.** Используй рантайм и примитивы, уже выбранные в проекте; не смешивай рантаймы. Не вызывай блокирующие операции (`std::fs`, `std::thread::sleep`, тяжёлые вычисления) внутри async-функций — используй асинхронные аналоги рантайма или вынос в `spawn_blocking`. Не держи guard от `std::sync::Mutex` через `.await` (Clippy: `await_holding_lock`); сократи область блокировки или используй асинхронный мьютекс, если блокировка действительно должна пережить `.await`.
 
@@ -394,13 +397,32 @@ mod tests {
 
 **Проверка выбора:** удали мысленно проверяемую строку кода — упадёт ли тест? Если нет, он проверяет не то. Добавь поле в структуру — заметит ли тест, что его значение неверно? Если нет и поле входит в контракт, сравни объект целиком.
 
+## 15. Арифметика, `as` и размеры из внешних данных
+
+**Принцип:** переполнение целого в debug-сборке паникует, а в release по умолчанию (`overflow-checks = false`) молча заворачивается. Если число пришло извне (длина или смещение из заголовка, количество элементов, размер от пользователя или из сети), выбери поведение явно: `checked_*` с ошибкой, `saturating_*`, когда насыщение и есть нужный смысл, `wrapping_*`, когда заворачивание задумано (хеши, счётчики по модулю). Приведение `as` между целыми молча обрезает значение и меняет знак; для внешних значений используй `TryFrom`/`try_into()`. Размер из входа сверяй с лимитом до выделения памяти или рекурсии: `Vec::with_capacity(n)` с `n` из заголовка позволяет одним запросом занять всю память.
+
+```rust
+/// Больше записей заранее не выделяем, даже если заголовок обещает.
+const MAX_RECORDS: usize = 1 << 20;
+
+// `count` и `record_size` пришли из заголовка файла.
+fn body_len(count: u64, record_size: u32) -> Option<usize> {
+    let count = usize::try_from(count).ok().filter(|&n| n <= MAX_RECORDS)?;
+    count.checked_mul(usize::try_from(record_size).ok()?)
+}
+```
+
+**Проверка выбора:** подставь вместо внешнего значения `0` и максимум типа. Если получится паника в debug, тихий неверный результат в release или попытка выделить гигабайты — нужна явная проверка. Индексы и счётчики, которые ограничивает сама программа, в `checked_*` не оборачивай. Не меняй `overflow-checks` в профиле и не включай линты вроде `clippy::arithmetic_side_effects` ради одной правки — это конфигурация проекта (см. «При написании кода»).
+
 ## Источники
 
 - Проект и инструменты: [Cargo Manifest](https://doc.rust-lang.org/cargo/reference/manifest.html), [Cargo Workspaces](https://doc.rust-lang.org/cargo/reference/workspaces.html), [Rust version](https://doc.rust-lang.org/cargo/reference/rust-version.html), [rustfmt](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted), [Clippy](https://doc.rust-lang.org/clippy/usage.html).
+- Зависимости: [cargo info](https://doc.rust-lang.org/cargo/commands/cargo-info.html), [cargo-deny](https://embarkstudios.github.io/cargo-deny/), [cargo-audit и RustSec](https://rustsec.org/), [Spracklen et al. — галлюцинации имён пакетов в коде от LLM](https://arxiv.org/abs/2406.10279).
 - Строки, срезы, владение: [The Book — Slices](https://doc.rust-lang.org/book/ch04-03-slices.html), [API Guidelines — Caller decides where to copy](https://rust-lang.github.io/api-guidelines/flexibility.html#c-caller-control), [std::clone::Clone](https://doc.rust-lang.org/std/clone/trait.Clone.html), [Clippy — ptr_arg](https://rust-lang.github.io/rust-clippy/stable/index.html#ptr_arg), [Clippy — redundant_clone](https://rust-lang.github.io/rust-clippy/stable/index.html#redundant_clone), [Rust Design Patterns — Clone to satisfy the borrow checker](https://rust-unofficial.github.io/patterns/anti_patterns/borrow_clone.html).
 - Ошибки и паники: [The Book — To panic! or Not to panic!](https://doc.rust-lang.org/book/ch09-03-to-panic-or-not-to-panic.html), [The Book — Recoverable Errors with Result](https://doc.rust-lang.org/book/ch09-02-recoverable-errors-with-result.html), [std::error::Error](https://doc.rust-lang.org/std/error/trait.Error.html), [API Guidelines — Error types are meaningful](https://rust-lang.github.io/api-guidelines/interoperability.html#c-good-err), [The Reference — Try propagation expression](https://doc.rust-lang.org/reference/expressions/operator-expr.html#the-try-propagation-expression).
 - Итераторы и сигнатуры: [The Book — Iterators in the I/O project](https://doc.rust-lang.org/book/ch13-03-improving-our-io-project.html), [Effective Rust — Iterators](https://effective-rust.com/iterators.html), [The Book — Trait objects](https://doc.rust-lang.org/book/ch18-02-trait-objects.html), [std::borrow::Cow](https://doc.rust-lang.org/std/borrow/enum.Cow.html).
 - Времена жизни, unsafe, async: [The Book — Lifetime elision](https://doc.rust-lang.org/book/ch10-03-lifetime-syntax.html#lifetime-elision), [The Rustonomicon](https://doc.rust-lang.org/nomicon/), [Clippy — undocumented_unsafe_blocks](https://rust-lang.github.io/rust-clippy/stable/index.html#undocumented_unsafe_blocks), [Clippy — await_holding_lock](https://rust-lang.github.io/rust-clippy/stable/index.html#await_holding_lock), [Miri](https://github.com/rust-lang/miri).
+- FFI и арифметика: [Rust 1.81 — abort при панике в `extern "C"`](https://blog.rust-lang.org/2024/09/05/Rust-1.81.0/), [std::panic::catch_unwind](https://doc.rust-lang.org/std/panic/fn.catch_unwind.html), [std::ffi::CStr](https://doc.rust-lang.org/std/ffi/struct.CStr.html), [The Reference — Overflow](https://doc.rust-lang.org/reference/expressions/operator-expr.html#overflow), [Cargo — профиль `overflow-checks`](https://doc.rust-lang.org/cargo/reference/profiles.html#overflow-checks), [std::convert::TryFrom](https://doc.rust-lang.org/std/convert/trait.TryFrom.html).
 - Аргументы, `match`, трейты: [Clippy — match_wildcard_for_single_variants](https://rust-lang.github.io/rust-clippy/stable/index.html#match_wildcard_for_single_variants), [Clippy — wildcard_enum_match_arm](https://rust-lang.github.io/rust-clippy/stable/index.html#wildcard_enum_match_arm), [Rust 1.75 — async fn и return-position impl Trait в трейтах](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits/), [API Guidelines — Documentation](https://rust-lang.github.io/api-guidelines/documentation.html).
 - Линты и тесты: [Rust 1.81 — `#[expect]` и `reason`](https://blog.rust-lang.org/2024/09/05/Rust-1.81.0/#expect-lint), [Clippy — allow_attributes_without_reason](https://rust-lang.github.io/rust-clippy/stable/index.html#allow_attributes_without_reason), [Cargo — `[lints]`](https://doc.rust-lang.org/cargo/reference/manifest.html#the-lints-section), [Edition 2024 — unsafe `set_var`](https://doc.rust-lang.org/edition-guide/rust-2024/newly-unsafe-functions.html).
 - Практика крупного Rust-проекта с агентами: [openai/codex — AGENTS.md](https://github.com/openai/codex/blob/main/AGENTS.md) и [workspace-линты codex-rs](https://github.com/openai/codex/blob/main/codex-rs/Cargo.toml).
