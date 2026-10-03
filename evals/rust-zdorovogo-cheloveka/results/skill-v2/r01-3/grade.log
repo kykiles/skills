@@ -1,0 +1,31 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+FAIL cargo test (с оценщиком)
+
+thread 'grader_bad_port' (17444) panicked at tests/zz_grader.rs:50:5:
+port = 80o: в сообщении нет ключа: строка 12: некорректный номер порта: invalid digit found in string
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+
+thread 'grader_binary_reports_bad_value' (17448) panicked at tests/zz_grader.rs:123:5:
+нет ключа или строки:
+ошибка: строка 12: некорректный номер порта: invalid digit found in string
+
+error: test failed, to rerun pass `--test zz_grader`
+METRIC pedantic_new 1
+info pedantic: src/lib.rs: warning: these match arms have identical bodies
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 0
+METRIC int_as 0
+METRIC clone 0
+METRIC added 73
+METRIC removed 5
+METRIC size_vs_reference 2.29
+RESULT FAIL (1)

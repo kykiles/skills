@@ -92,7 +92,36 @@ fn read_port(path: &std::path::Path) -> Result<u16, ConfigError> {
 }
 ```
 
-**Проверка выбора:** может ли вызывающий по-разному реагировать на разные сбои? Если да — нужны различимые варианты, а не строка. `map_err(|e| e.to_string())` теряет тип и цепочку причин — используй только на границе, где ошибка превращается в сообщение для человека. `Display` описывает текущий уровень и не дублирует текст `source()`, иначе при выводе цепочки сообщение повторится. Добавление варианта в публичный enum ошибок — несовместимое изменение, если enum не помечен `#[non_exhaustive]`.
+Вариант с контекстом хранит место сбоя и исходную причину отдельным полем; `source()` возвращает её, а `Display` описывает только свой уровень:
+
+```rust
+#[derive(Debug)]
+enum ParseError {
+    BadField { line: usize, field: &'static str, source: std::num::ParseIntError },
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadField { line, field, .. } => write!(f, "строка {line}: некорректное поле `{field}`"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::BadField { source, .. } => Some(source),
+        }
+    }
+}
+
+fn parse_count(line: usize, text: &str) -> Result<u32, ParseError> {
+    text.trim().parse().map_err(|source| ParseError::BadField { line, field: "count", source })
+}
+```
+
+**Проверка выбора:** может ли вызывающий по-разному реагировать на разные сбои? Если да — нужны различимые варианты, а не строка. `map_err(|e| e.to_string())`, `map_err(|_| …)` и причина в поле `String` теряют тип и цепочку причин — используй только на границе, где ошибка превращается в сообщение для человека. `Display` описывает текущий уровень и не дублирует текст `source()`, иначе при выводе цепочки сообщение повторится. Добавление варианта в публичный enum ошибок — несовместимое изменение, если enum не помечен `#[non_exhaustive]`.
 
 ## Арифметика, `as` и размеры из внешних данных
 

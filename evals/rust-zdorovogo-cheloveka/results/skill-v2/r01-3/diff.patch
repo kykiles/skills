@@ -1,0 +1,121 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r01-errors/src/lib.rs ws/skill-v2/r01-3/src/lib.rs
+--- base_r01-errors/src/lib.rs	2026-10-03 16:19:17.088236412 +0000
++++ ws/skill-v2/r01-3/src/lib.rs	2026-10-03 16:16:32.101662592 +0000
+@@ -37,6 +37,21 @@
+     Syntax { line: usize },
+     /// Ключ не поддерживается.
+     UnknownKey { line: usize, key: String },
++    /// Некорректное значение для ключа `port`.
++    BadPort {
++        line: usize,
++        source: std::num::ParseIntError,
++    },
++    /// Некорректное значение для ключа `timeout_ms`.
++    BadTimeout {
++        line: usize,
++        source: std::num::ParseIntError,
++    },
++    /// Некорректное значение для ключа `verbose`.
++    BadVerbose {
++        line: usize,
++        source: std::str::ParseBoolError,
++    },
+ }
+ 
+ impl fmt::Display for ConfigError {
+@@ -45,6 +60,13 @@
+             Self::Read { path, .. } => write!(f, "не удалось прочитать {}", path.display()),
+             Self::Syntax { line } => write!(f, "строка {line}: ожидается `ключ = значение`"),
+             Self::UnknownKey { line, key } => write!(f, "строка {line}: неизвестный ключ `{key}`"),
++            Self::BadPort { line, .. } => write!(f, "строка {line}: некорректный номер порта"),
++            Self::BadTimeout { line, .. } => {
++                write!(f, "строка {line}: некорректное значение `timeout_ms`")
++            }
++            Self::BadVerbose { line, .. } => {
++                write!(f, "строка {line}: некорректное значение `verbose`")
++            }
+         }
+     }
+ }
+@@ -54,6 +76,9 @@
+         match self {
+             Self::Read { source, .. } => Some(source),
+             Self::Syntax { .. } | Self::UnknownKey { .. } => None,
++            Self::BadPort { source, .. } => Some(source),
++            Self::BadTimeout { source, .. } => Some(source),
++            Self::BadVerbose { source, .. } => Some(source),
+         }
+     }
+ }
+@@ -76,8 +101,11 @@
+ ///
+ /// # Errors
+ ///
+-/// Возвращает [`ConfigError::Syntax`] для строки без `=` и
+-/// [`ConfigError::UnknownKey`] для неизвестного ключа.
++/// Возвращает:
++/// - [`ConfigError::Syntax`] для строки без `=`;
++/// - [`ConfigError::UnknownKey`] для неизвестного ключа;
++/// - [`ConfigError::BadPort`], [`ConfigError::BadTimeout`] или [`ConfigError::BadVerbose`]
++///   если значение не соответствует типу ключа.
+ pub fn parse(text: &str) -> Result<Config, ConfigError> {
+     let mut config = Config::default();
+     for (index, raw) in text.lines().enumerate() {
+@@ -92,9 +120,22 @@
+         let (key, value) = (key.trim(), value.trim());
+         match key {
+             "listen" => config.listen = value.to_string(),
+-            "port" => config.port = value.parse().unwrap(),
+-            "timeout_ms" => config.timeout = Duration::from_millis(value.parse().unwrap()),
+-            "verbose" => config.verbose = value.parse().unwrap(),
++            "port" => {
++                config.port = value
++                    .parse()
++                    .map_err(|source| ConfigError::BadPort { line, source })?;
++            }
++            "timeout_ms" => {
++                let millis: u64 = value
++                    .parse()
++                    .map_err(|source| ConfigError::BadTimeout { line, source })?;
++                config.timeout = Duration::from_millis(millis);
++            }
++            "verbose" => {
++                config.verbose = value
++                    .parse()
++                    .map_err(|source| ConfigError::BadVerbose { line, source })?;
++            }
+             _ => {
+                 return Err(ConfigError::UnknownKey {
+                     line,
+@@ -131,4 +172,31 @@
+             Err(ConfigError::UnknownKey { line: 2, .. })
+         ));
+     }
++
++    #[test]
++    fn rejects_bad_port() {
++        let error = parse("port = 80o\n").unwrap_err();
++        assert!(matches!(error, ConfigError::BadPort { line: 1, .. }));
++        assert_eq!(error.to_string(), "строка 1: некорректный номер порта");
++    }
++
++    #[test]
++    fn rejects_bad_timeout() {
++        let error = parse("timeout_ms = abc\n").unwrap_err();
++        assert!(matches!(error, ConfigError::BadTimeout { line: 1, .. }));
++        assert_eq!(
++            error.to_string(),
++            "строка 1: некорректное значение `timeout_ms`"
++        );
++    }
++
++    #[test]
++    fn rejects_bad_verbose() {
++        let error = parse("verbose = maybe\n").unwrap_err();
++        assert!(matches!(error, ConfigError::BadVerbose { line: 1, .. }));
++        assert_eq!(
++            error.to_string(),
++            "строка 1: некорректное значение `verbose`"
++        );
++    }
+ }

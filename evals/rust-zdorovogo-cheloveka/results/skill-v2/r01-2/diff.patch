@@ -1,0 +1,107 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r01-errors/src/lib.rs ws/skill-v2/r01-2/src/lib.rs
+--- base_r01-errors/src/lib.rs	2026-10-03 16:19:17.088236412 +0000
++++ ws/skill-v2/r01-2/src/lib.rs	2026-10-03 16:16:38.813662991 +0000
+@@ -37,6 +37,12 @@
+     Syntax { line: usize },
+     /// Ключ не поддерживается.
+     UnknownKey { line: usize, key: String },
++    /// Значение не может быть распарсено.
++    BadValue {
++        line: usize,
++        field: &'static str,
++        source: Box<dyn std::error::Error + Send + Sync>,
++    },
+ }
+ 
+ impl fmt::Display for ConfigError {
+@@ -45,6 +51,9 @@
+             Self::Read { path, .. } => write!(f, "не удалось прочитать {}", path.display()),
+             Self::Syntax { line } => write!(f, "строка {line}: ожидается `ключ = значение`"),
+             Self::UnknownKey { line, key } => write!(f, "строка {line}: неизвестный ключ `{key}`"),
++            Self::BadValue { line, field, .. } => {
++                write!(f, "строка {line}: некорректное значение поля `{field}`")
++            }
+         }
+     }
+ }
+@@ -54,6 +63,7 @@
+         match self {
+             Self::Read { source, .. } => Some(source),
+             Self::Syntax { .. } | Self::UnknownKey { .. } => None,
++            Self::BadValue { source, .. } => Some(source.as_ref()),
+         }
+     }
+ }
+@@ -92,9 +102,28 @@
+         let (key, value) = (key.trim(), value.trim());
+         match key {
+             "listen" => config.listen = value.to_string(),
+-            "port" => config.port = value.parse().unwrap(),
+-            "timeout_ms" => config.timeout = Duration::from_millis(value.parse().unwrap()),
+-            "verbose" => config.verbose = value.parse().unwrap(),
++            "port" => {
++                config.port = value.parse().map_err(|source| ConfigError::BadValue {
++                    line,
++                    field: "port",
++                    source: Box::new(source),
++                })?;
++            }
++            "timeout_ms" => {
++                let millis: u64 = value.parse().map_err(|source| ConfigError::BadValue {
++                    line,
++                    field: "timeout_ms",
++                    source: Box::new(source),
++                })?;
++                config.timeout = Duration::from_millis(millis);
++            }
++            "verbose" => {
++                config.verbose = value.parse().map_err(|source| ConfigError::BadValue {
++                    line,
++                    field: "verbose",
++                    source: Box::new(source),
++                })?;
++            }
+             _ => {
+                 return Err(ConfigError::UnknownKey {
+                     line,
+@@ -131,4 +160,40 @@
+             Err(ConfigError::UnknownKey { line: 2, .. })
+         ));
+     }
++
++    #[test]
++    fn rejects_bad_port() {
++        assert!(matches!(
++            parse("port = 80o\n"),
++            Err(ConfigError::BadValue {
++                line: 1,
++                field: "port",
++                ..
++            })
++        ));
++    }
++
++    #[test]
++    fn rejects_bad_timeout_ms() {
++        assert!(matches!(
++            parse("timeout_ms = 1500abc\n"),
++            Err(ConfigError::BadValue {
++                line: 1,
++                field: "timeout_ms",
++                ..
++            })
++        ));
++    }
++
++    #[test]
++    fn rejects_bad_verbose() {
++        assert!(matches!(
++            parse("verbose = maybe\n"),
++            Err(ConfigError::BadValue {
++                line: 1,
++                field: "verbose",
++                ..
++            })
++        ));
++    }
+ }

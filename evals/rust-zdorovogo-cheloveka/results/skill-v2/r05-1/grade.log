@@ -1,0 +1,25 @@
+ok   не изменён .gitignore
+ok   не изменён Cargo.lock
+ok   не изменён Cargo.toml
+ok   нет посторонних файлов
+ok   cargo fmt --check
+ok   cargo build
+ok   cargo clippy -D warnings
+FAIL cargo test (с оценщиком)
+
+thread 'grader_allocations_do_not_grow_with_log' (18980) panicked at tests/zz_grader_alloc.rs:77:5:
+top_paths: 198991 выделений памяти на 100000 строк лога
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+error: test failed, to rerun pass `--test zz_grader_alloc`
+METRIC pedantic_new 0
+METRIC dbg 0
+METRIC println_outside_main 0
+METRIC todo 0
+METRIC unwrap_outside_tests 0
+METRIC int_as 0
+METRIC clone 0
+METRIC added 6
+METRIC removed 16
+METRIC size_vs_reference 0.43
+RESULT FAIL (1)
