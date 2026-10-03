@@ -1,0 +1,172 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r02-limits/src/lib.rs ws/base/r02-3/src/lib.rs
+--- base_r02-limits/src/lib.rs	2026-10-03 12:54:14.985310120 +0000
++++ ws/base/r02-3/src/lib.rs	2026-10-03 12:55:29.101960103 +0000
+@@ -25,6 +25,10 @@
+     Truncated,
+     /// Данные записи `index` выходят за конец архива.
+     OutOfBounds { index: usize },
++    /// Количество записей превышает максимальное допустимое значение (65536).
++    TooManyEntries,
++    /// Смещение записи выходит за пределы допустимых значений.
++    InvalidOffset { index: usize },
+ }
+ 
+ impl fmt::Display for Error {
+@@ -33,6 +37,8 @@
+             Self::BadMagic => write!(f, "не архив PAK1"),
+             Self::Truncated => write!(f, "архив обрезан"),
+             Self::OutOfBounds { index } => write!(f, "запись {index} выходит за конец архива"),
++            Self::TooManyEntries => write!(f, "количество записей превышает максимально допустимое (65536)"),
++            Self::InvalidOffset { index } => write!(f, "запись {index} имеет недопустимое смещение"),
+         }
+     }
+ }
+@@ -40,7 +46,7 @@
+ impl std::error::Error for Error {}
+ 
+ struct Entry {
+-    offset: u32,
++    offset: u64,
+     len: u32,
+ }
+ 
+@@ -66,21 +72,33 @@
+         }
+         let count = u32::from_le_bytes(input[4..8].try_into().unwrap()) as usize;
+ 
++        // Ограничиваем количество записей на 65536 для предотвращения истощения памяти
++        if count > 65536 {
++            return Err(Error::TooManyEntries);
++        }
++
+         let mut entries = Vec::with_capacity(count);
+         let mut pos = HEADER_LEN;
+         for _ in 0..count {
+-            let Some(raw) = input.get(pos..pos + ENTRY_LEN) else {
++            // Проверяем, что pos не переполнится и остаётся в пределах input
++            let next_pos = pos.checked_add(ENTRY_LEN).ok_or(Error::Truncated)?;
++            let Some(raw) = input.get(pos..next_pos) else {
+                 return Err(Error::Truncated);
+             };
+-            let offset = u64::from_le_bytes(raw[..8].try_into().unwrap()) as u32;
++            let offset = u64::from_le_bytes(raw[..8].try_into().unwrap());
+             let len = u32::from_le_bytes(raw[8..].try_into().unwrap());
+             entries.push(Entry { offset, len });
+-            pos += ENTRY_LEN;
++            pos = next_pos;
+         }
+ 
+         let data = &input[pos..];
++        let data_len = data.len() as u64;
+         for (index, entry) in entries.iter().enumerate() {
+-            if (entry.offset + entry.len) as usize > data.len() {
++            // Проверяем, что offset и len не переполняются при сложении
++            let end = entry.offset.checked_add(entry.len as u64)
++                .ok_or(Error::InvalidOffset { index })?;
++            // Проверяем, что данные записи находятся внутри области данных
++            if end > data_len {
+                 return Err(Error::OutOfBounds { index });
+             }
+         }
+@@ -100,8 +118,9 @@
+     /// Данные записи `index`; `None`, если такой записи нет.
+     pub fn get(&self, index: usize) -> Option<&'a [u8]> {
+         let entry = self.entries.get(index)?;
+-        let start = entry.offset as usize;
+-        Some(&self.data[start..start + entry.len as usize])
++        let start = usize::try_from(entry.offset).ok()?;
++        let len = entry.len as usize;
++        Some(&self.data[start..start.checked_add(len)?])
+     }
+ }
+ 
+@@ -141,4 +160,89 @@
+             Some(Error::OutOfBounds { index: 0 })
+         );
+     }
++
++    #[test]
++    fn rejects_too_many_entries() {
++        // Попытка создать архив с более чем 65536 записями должна быть отклонена
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&65537u32.to_le_bytes()); // 65537 записей
++        // Добавляем достаточно данных для таблицы (хотя они не будут все прочитаны)
++        input.extend_from_slice(&[0u8; 100]);
++
++        assert_eq!(
++            Archive::parse(&input).err(),
++            Some(Error::TooManyEntries)
++        );
++    }
++
++    #[test]
++    fn rejects_offset_overflow() {
++        // Попытка использовать очень большой offset, который переполняется при добавлении len
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&1u32.to_le_bytes()); // 1 запись
++        // offset = u64::MAX, len = 1 (переполнение при сложении)
++        input.extend_from_slice(&u64::MAX.to_le_bytes());
++        input.extend_from_slice(&1u32.to_le_bytes());
++        input.extend_from_slice(b"data");
++
++        assert_eq!(
++            Archive::parse(&input).err(),
++            Some(Error::InvalidOffset { index: 0 })
++        );
++    }
++
++    #[test]
++    fn rejects_position_overflow_in_table() {
++        // Попытка вызвать переполнение при чтении таблицы
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&u32::MAX.to_le_bytes()); // очень большое количество (но < 65536, поэтому не сработает)
++        // Это достаточно маленький файл, чтобы не соответствовать таблице
++
++        assert_eq!(
++            Archive::parse(&input).err(),
++            Some(Error::TooManyEntries) // Отклоняется на проверке 65536
++        );
++    }
++
++    #[test]
++    fn handles_large_offset_in_bounds() {
++        // Большой offset, который не переполняется, но выходит за границы данных
++        let input = archive(&[(1000, 1)], b"data");
++        assert_eq!(
++            Archive::parse(&input).err(),
++            Some(Error::OutOfBounds { index: 0 })
++        );
++    }
++
++    #[test]
++    fn safely_rejects_oom_attack() {
++        // Попытка с 12-байтовым файлом содержит огромное количество записей в заголовке
++        // Это должно быть отклонено на проверке TooManyEntries
++        let mut input = MAGIC.to_vec();
++        input.extend_from_slice(&(1_000_000u32).to_le_bytes()); // 1 миллион записей
++        // Файл всего ~12 байт - не может содержать таблицу для миллиона записей
++
++        assert_eq!(
++            Archive::parse(&input).err(),
++            Some(Error::TooManyEntries)
++        );
++    }
++
++    #[test]
++    fn zero_entries_works() {
++        // Архив без записей должен быть корректным
++        let input = archive(&[], b"");
++        let pak = Archive::parse(&input).unwrap();
++        assert_eq!(pak.len(), 0);
++        assert_eq!(pak.get(0), None);
++    }
++
++    #[test]
++    fn max_valid_entries_works() {
++        // Архив с несколькими записями, все с нулевой длиной
++        let entries: Vec<(u64, u32)> = (0..10).map(|_| (0u64, 0)).collect();
++        let input = archive(&entries, b"");
++        let pak = Archive::parse(&input).unwrap();
++        assert_eq!(pak.len(), 10);
++    }
+ }
