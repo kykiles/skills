@@ -1,0 +1,114 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r01-errors/src/lib.rs ws/skill-v1/r01-2/src/lib.rs
+--- base_r01-errors/src/lib.rs	2026-10-03 12:53:56.549128154 +0000
++++ ws/skill-v1/r01-2/src/lib.rs	2026-10-03 12:59:07.705973097 +0000
+@@ -37,6 +37,12 @@
+     Syntax { line: usize },
+     /// Ключ не поддерживается.
+     UnknownKey { line: usize, key: String },
++    /// Значение ключа некорректно.
++    InvalidValue {
++        line: usize,
++        key: String,
++        source: String,
++    },
+ }
+ 
+ impl fmt::Display for ConfigError {
+@@ -45,6 +51,12 @@
+             Self::Read { path, .. } => write!(f, "не удалось прочитать {}", path.display()),
+             Self::Syntax { line } => write!(f, "строка {line}: ожидается `ключ = значение`"),
+             Self::UnknownKey { line, key } => write!(f, "строка {line}: неизвестный ключ `{key}`"),
++            Self::InvalidValue { line, key, source } => {
++                write!(
++                    f,
++                    "строка {line}: некорректное значение ключа `{key}`: {source}"
++                )
++            }
+         }
+     }
+ }
+@@ -53,7 +65,7 @@
+     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+         match self {
+             Self::Read { source, .. } => Some(source),
+-            Self::Syntax { .. } | Self::UnknownKey { .. } => None,
++            Self::Syntax { .. } | Self::UnknownKey { .. } | Self::InvalidValue { .. } => None,
+         }
+     }
+ }
+@@ -76,8 +88,9 @@
+ ///
+ /// # Errors
+ ///
+-/// Возвращает [`ConfigError::Syntax`] для строки без `=` и
+-/// [`ConfigError::UnknownKey`] для неизвестного ключа.
++/// Возвращает [`ConfigError::Syntax`] для строки без `=`,
++/// [`ConfigError::UnknownKey`] для неизвестного ключа и
++/// [`ConfigError::InvalidValue`] для некорректного значения ключа.
+ pub fn parse(text: &str) -> Result<Config, ConfigError> {
+     let mut config = Config::default();
+     for (index, raw) in text.lines().enumerate() {
+@@ -92,9 +105,28 @@
+         let (key, value) = (key.trim(), value.trim());
+         match key {
+             "listen" => config.listen = value.to_string(),
+-            "port" => config.port = value.parse().unwrap(),
+-            "timeout_ms" => config.timeout = Duration::from_millis(value.parse().unwrap()),
+-            "verbose" => config.verbose = value.parse().unwrap(),
++            "port" => {
++                config.port = value.parse().map_err(|_| ConfigError::InvalidValue {
++                    line,
++                    key: key.to_string(),
++                    source: "ожидается число от 0 до 65535".to_string(),
++                })?
++            }
++            "timeout_ms" => {
++                let ms: u64 = value.parse().map_err(|_| ConfigError::InvalidValue {
++                    line,
++                    key: key.to_string(),
++                    source: "ожидается целое число миллисекунд".to_string(),
++                })?;
++                config.timeout = Duration::from_millis(ms);
++            }
++            "verbose" => {
++                config.verbose = value.parse().map_err(|_| ConfigError::InvalidValue {
++                    line,
++                    key: key.to_string(),
++                    source: "ожидается `true` или `false`".to_string(),
++                })?
++            }
+             _ => {
+                 return Err(ConfigError::UnknownKey {
+                     line,
+@@ -131,4 +163,31 @@
+             Err(ConfigError::UnknownKey { line: 2, .. })
+         ));
+     }
++
++    #[test]
++    fn rejects_invalid_port() {
++        let err = parse("port = 80o").unwrap_err();
++        assert!(matches!(err, ConfigError::InvalidValue { line: 1, .. }));
++        let msg = err.to_string();
++        assert!(msg.contains("строка 1"));
++        assert!(msg.contains("port"));
++    }
++
++    #[test]
++    fn rejects_invalid_timeout_ms() {
++        let err = parse("timeout_ms = abc").unwrap_err();
++        assert!(matches!(err, ConfigError::InvalidValue { line: 1, .. }));
++        let msg = err.to_string();
++        assert!(msg.contains("строка 1"));
++        assert!(msg.contains("timeout_ms"));
++    }
++
++    #[test]
++    fn rejects_invalid_verbose() {
++        let err = parse("verbose = maybe").unwrap_err();
++        assert!(matches!(err, ConfigError::InvalidValue { line: 1, .. }));
++        let msg = err.to_string();
++        assert!(msg.contains("строка 1"));
++        assert!(msg.contains("verbose"));
++    }
+ }
