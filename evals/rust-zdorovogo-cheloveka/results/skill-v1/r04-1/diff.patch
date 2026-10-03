@@ -1,0 +1,154 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r04-refactor/src/export.rs ws/skill-v1/r04-1/src/export.rs
+--- base_r04-refactor/src/export.rs	2026-10-03 12:57:10.360297194 +0000
++++ ws/skill-v1/r04-1/src/export.rs	2026-10-03 13:01:32.893981728 +0000
+@@ -5,11 +5,21 @@
+     let mut out = String::from("source,level,message,count\n");
+     for entry in entries {
+         // TODO(маша): source тоже может содержать запятую
+-        out.push_str(&format!("{},{},{},{}\n", entry.source, entry.level, quote(&entry.message), entry.count));
++        out.push_str(&format!(
++            "{},{},{},{}\n",
++            entry.source,
++            entry.level,
++            quote(&entry.message),
++            entry.count
++        ));
+     }
+     out
+ }
+ 
+-fn quote(field:&str)->String{
+-    if field.contains([',', '"', '\n']) { format!("\"{}\"", field.replace('"', "\"\"")) } else { field.to_string() }
++fn quote(field: &str) -> String {
++    if field.contains([',', '"', '\n']) {
++        format!("\"{}\"", field.replace('"', "\"\""))
++    } else {
++        field.to_string()
++    }
+ }
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r04-refactor/src/report.rs ws/skill-v1/r04-1/src/report.rs
+--- base_r04-refactor/src/report.rs	2026-10-03 12:57:10.358663684 +0000
++++ ws/skill-v1/r04-1/src/report.rs	2026-10-03 13:01:28.749981481 +0000
+@@ -31,70 +31,21 @@
+     }
+ 
+     if !critical.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Critical));
+-        let mut total = 0;
+-        for (source, list) in &critical {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
++        format_section(&mut out, Level::Critical, &critical, |messages| {
++            messages.join("; ")
++        });
+     }
+ 
+     if !warning.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Warning));
+-        let mut total = 0;
+-        for (source, list) in &warning {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
++        format_section(&mut out, Level::Warning, &warning, |messages| {
++            messages.join("; ")
++        });
+     }
+ 
+     if !info.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Info));
+-        let mut total = 0;
+-        for (source, list) in &info {
+-            let mut n = 0;
+-            let mut messages: BTreeSet<&str> = BTreeSet::new();
+-            for entry in list {
+-                n += entry.count;
+-                messages.insert(&entry.message);
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  ({} сообщ.)\n",
+-                source,
+-                n,
+-                messages.len()
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
++        format_section(&mut out, Level::Info, &info, |messages| {
++            format!("({} сообщ.)", messages.len())
++        });
+     }
+ 
+     let all: i64 = entries.iter().map(|entry| entry.count).sum();
+@@ -106,6 +57,42 @@
+     out
+ }
+ 
++/// Форматирует одну секцию отчёта.
++///
++/// # Arguments
++///
++/// * `out` - строка для накопления результата
++/// * `level` - уровень секции
++/// * `sources` - map источников на список записей
++/// * `format_messages` - функция для форматирования сообщений (для Critical/Warning выводит сами сообщения,
++///   для Info — только их число)
++fn format_section<F>(
++    out: &mut String,
++    level: Level,
++    sources: &BTreeMap<&str, Vec<&Entry>>,
++    format_messages: F,
++) where
++    F: Fn(Vec<&str>) -> String,
++{
++    out.push_str(&format!("\n[{}]\n", level));
++    let mut total = 0;
++    for (source, list) in sources {
++        let mut n = 0;
++        let mut messages: BTreeSet<&str> = BTreeSet::new();
++        for entry in list {
++            n += entry.count;
++            messages.insert(&entry.message);
++        }
++        total += n;
++        let messages_formatted = format_messages(messages.iter().copied().collect());
++        out.push_str(&format!(
++            "  {:<12} {:>5}  {}\n",
++            source, n, messages_formatted
++        ));
++    }
++    out.push_str(&format!("  итого: {total}\n"));
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;

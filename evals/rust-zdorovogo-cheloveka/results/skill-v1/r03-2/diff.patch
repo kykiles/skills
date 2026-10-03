@@ -1,0 +1,134 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r03-enum/src/policy.rs ws/skill-v1/r03-2/src/policy.rs
+--- base_r03-enum/src/policy.rs	2026-10-03 12:56:12.490947401 +0000
++++ ws/skill-v1/r03-2/src/policy.rs	2026-10-03 13:01:42.437982295 +0000
+@@ -2,7 +2,10 @@
+ 
+ /// Заказ ещё может перейти в другой статус.
+ pub fn is_open(status: Status) -> bool {
+-    !matches!(status, Status::Delivered | Status::Cancelled)
++    !matches!(
++        status,
++        Status::Delivered | Status::Cancelled | Status::Returned
++    )
+ }
+ 
+ /// Покупатель может отменить заказ сам.
+@@ -18,13 +21,14 @@
+             | (Status::Paid, Status::Shipped)
+             | (Status::Shipped, Status::Delivered)
+             | (Status::New | Status::Paid, Status::Cancelled)
++            | (Status::Delivered, Status::Returned)
+     )
+ }
+ 
+ /// Сколько копеек вернуть покупателю.
+ pub fn refund(order: &Order) -> u64 {
+     match order.status {
+-        Status::Cancelled if order.total > 0 => order.total,
++        Status::Cancelled | Status::Returned if order.total > 0 => order.total,
+         _ => 0,
+     }
+ }
+@@ -42,4 +46,20 @@
+         assert!(can_cancel(Status::Paid));
+         assert!(!can_cancel(Status::Shipped));
+     }
++
++    #[test]
++    fn returned_status() {
++        assert!(can_move(Status::Delivered, Status::Returned));
++        assert!(!can_move(Status::Paid, Status::Returned));
++        assert!(!can_move(Status::Returned, Status::Cancelled));
++        assert!(!is_open(Status::Returned));
++        assert!(!can_cancel(Status::Returned));
++
++        let returned_order = Order {
++            id: 1,
++            status: Status::Returned,
++            total: 5000,
++        };
++        assert_eq!(refund(&returned_order), 5000);
++    }
+ }
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r03-enum/src/report.rs ws/skill-v1/r03-2/src/report.rs
+--- base_r03-enum/src/report.rs	2026-10-03 12:56:12.490994631 +0000
++++ ws/skill-v1/r03-2/src/report.rs	2026-10-03 13:01:35.653981892 +0000
+@@ -59,8 +59,29 @@
+         ];
+         assert_eq!(
+             summary(&orders),
+-            "новый: 0\nоплачен: 1\nв доставке: 0\nдоставлен: 1\nотменён: 1\n\
++            "новый: 0\nоплачен: 1\nв доставке: 0\nдоставлен: 1\nотменён: 1\nвозвращён: 0\n\
+              открытых: 1, закрытых: 2\nвыручка: 1150.00 ₽\nвозвраты: 99.50 ₽\n"
+         );
+     }
++
++    #[test]
++    fn returned_orders_excluded_from_revenue() {
++        let orders = [
++            Order {
++                id: 1,
++                status: Status::Delivered,
++                total: 100000,
++            },
++            Order {
++                id: 2,
++                status: Status::Returned,
++                total: 100000,
++            },
++        ];
++        assert_eq!(
++            summary(&orders),
++            "новый: 0\nоплачен: 0\nв доставке: 0\nдоставлен: 1\nотменён: 0\nвозвращён: 1\n\
++             открытых: 0, закрытых: 2\nвыручка: 1000.00 ₽\nвозвраты: 1000.00 ₽\n"
++        );
++    }
+ }
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r03-enum/src/status.rs ws/skill-v1/r03-2/src/status.rs
+--- base_r03-enum/src/status.rs	2026-10-03 12:56:12.491055055 +0000
++++ ws/skill-v1/r03-2/src/status.rs	2026-10-03 13:00:58.789979700 +0000
+@@ -11,16 +11,19 @@
+     Delivered,
+     /// Отменён до отправки.
+     Cancelled,
++    /// Возвращён после доставки.
++    Returned,
+ }
+ 
+ impl Status {
+     /// Все статусы в порядке жизненного цикла.
+-    pub const ALL: [Status; 5] = [
++    pub const ALL: [Status; 6] = [
+         Status::New,
+         Status::Paid,
+         Status::Shipped,
+         Status::Delivered,
+         Status::Cancelled,
++        Status::Returned,
+     ];
+ 
+     /// Код статуса в выгрузке и в CLI.
+@@ -31,6 +34,7 @@
+             Status::Shipped => "shipped",
+             Status::Delivered => "delivered",
+             Status::Cancelled => "cancelled",
++            Status::Returned => "returned",
+         }
+     }
+ 
+@@ -42,6 +46,7 @@
+             "shipped" => Some(Status::Shipped),
+             "delivered" => Some(Status::Delivered),
+             "cancelled" => Some(Status::Cancelled),
++            "returned" => Some(Status::Returned),
+             _ => None,
+         }
+     }
+@@ -54,6 +59,7 @@
+             Status::Shipped => "в доставке",
+             Status::Delivered => "доставлен",
+             Status::Cancelled => "отменён",
++            Status::Returned => "возвращён",
+         }
+     }
+ }
