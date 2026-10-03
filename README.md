@@ -4,7 +4,7 @@
 
 | Скилл | Для чего |
 |-------|----------|
-| [`rust-zdorovogo-cheloveka`](rust-zdorovogo-cheloveka/SKILL.md) | Писать, чинить, рефакторить и тестировать Rust-код минимальными правками. |
+| [`rust-zdorovogo-cheloveka`](rust-zdorovogo-cheloveka/SKILL.md) | Писать, чинить, рефакторить и тестировать Rust-код минимальными правками; подробности по темам — в `references/`. |
 | [`go-zdorovogo-cheloveka`](go-zdorovogo-cheloveka/SKILL.md) | Писать, чинить, рефакторить и тестировать Go-код минимальными правками; подробности по темам — в `references/`. |
 
 Испытания скиллов и их результаты — в [`evals/`](evals/), заметки о разработке — в [`docs/`](docs/).
