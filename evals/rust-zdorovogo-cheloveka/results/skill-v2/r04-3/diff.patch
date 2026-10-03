@@ -1,0 +1,133 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r04-refactor/src/report.rs ws/skill-v2/r04-3/src/report.rs
+--- base_r04-refactor/src/report.rs	2026-10-03 16:19:17.181265381 +0000
++++ ws/skill-v2/r04-3/src/report.rs	2026-10-03 16:21:04.453678782 +0000
+@@ -11,6 +11,53 @@
+     pub count: i64,
+ }
+ 
++/// Форматирует строку источника с уникальными сообщениями в порядке появления.
++/// Используется для уровней Critical и Warning.
++fn format_messages_line(source: &str, count: i64, entries: &[&Entry]) -> String {
++    let mut messages: Vec<&str> = Vec::new();
++    for entry in entries {
++        if !messages.contains(&entry.message.as_str()) {
++            messages.push(&entry.message);
++        }
++    }
++    format!("  {:<12} {:>5}  {}\n", source, count, messages.join("; "))
++}
++
++/// Форматирует строку источника с числом уникальных сообщений.
++/// Используется для уровня Info.
++fn format_count_line(source: &str, count: i64, entries: &[&Entry]) -> String {
++    let messages: BTreeSet<&str> = entries.iter().map(|e| e.message.as_str()).collect();
++    format!(
++        "  {:<12} {:>5}  ({} сообщ.)\n",
++        source,
++        count,
++        messages.len()
++    )
++}
++
++/// Форматирует секцию отчёта по уровню.
++fn format_section(
++    out: &mut String,
++    level: &Level,
++    map: &BTreeMap<&str, Vec<&Entry>>,
++    format_line: impl Fn(&str, i64, &[&Entry]) -> String,
++) {
++    if map.is_empty() {
++        return;
++    }
++
++    out.push_str(&format!("\n[{}]\n", level));
++    let mut total = 0;
++
++    for (source, list) in map {
++        let count: i64 = list.iter().map(|e| e.count).sum();
++        total += count;
++        out.push_str(&format_line(source, count, list));
++    }
++
++    out.push_str(&format!("  итого: {total}\n"));
++}
++
+ /// Возвращает отчёт: секции по уровням от Critical к Info, внутри секции
+ /// источники по алфавиту с суммой `count`. Для Critical и Warning выводятся
+ /// уникальные сообщения в порядке появления, для Info — только их число.
+@@ -30,72 +77,9 @@
+         }
+     }
+ 
+-    if !critical.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Critical));
+-        let mut total = 0;
+-        for (source, list) in &critical {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !warning.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Warning));
+-        let mut total = 0;
+-        for (source, list) in &warning {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !info.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Info));
+-        let mut total = 0;
+-        for (source, list) in &info {
+-            let mut n = 0;
+-            let mut messages: BTreeSet<&str> = BTreeSet::new();
+-            for entry in list {
+-                n += entry.count;
+-                messages.insert(&entry.message);
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  ({} сообщ.)\n",
+-                source,
+-                n,
+-                messages.len()
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
++    format_section(&mut out, &Level::Critical, &critical, format_messages_line);
++    format_section(&mut out, &Level::Warning, &warning, format_messages_line);
++    format_section(&mut out, &Level::Info, &info, format_count_line);
+ 
+     let all: i64 = entries.iter().map(|entry| entry.count).sum();
+     let sources: BTreeSet<&str> = entries.iter().map(|entry| entry.source.as_str()).collect();

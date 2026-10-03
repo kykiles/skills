@@ -1,0 +1,136 @@
+diff -ruN '--exclude=.git' '--exclude=target' '--exclude=Cargo.lock.bak' base_r04-refactor/src/report.rs ws/skill-v2/r04-1/src/report.rs
+--- base_r04-refactor/src/report.rs	2026-10-03 16:19:17.181265381 +0000
++++ ws/skill-v2/r04-1/src/report.rs	2026-10-03 16:16:17.441661721 +0000
+@@ -30,72 +30,9 @@
+         }
+     }
+ 
+-    if !critical.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Critical));
+-        let mut total = 0;
+-        for (source, list) in &critical {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !warning.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Warning));
+-        let mut total = 0;
+-        for (source, list) in &warning {
+-            let mut n = 0;
+-            let mut messages: Vec<&str> = Vec::new();
+-            for entry in list {
+-                n += entry.count;
+-                if !messages.contains(&entry.message.as_str()) {
+-                    messages.push(&entry.message);
+-                }
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  {}\n",
+-                source,
+-                n,
+-                messages.join("; ")
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
+-
+-    if !info.is_empty() {
+-        out.push_str(&format!("\n[{}]\n", Level::Info));
+-        let mut total = 0;
+-        for (source, list) in &info {
+-            let mut n = 0;
+-            let mut messages: BTreeSet<&str> = BTreeSet::new();
+-            for entry in list {
+-                n += entry.count;
+-                messages.insert(&entry.message);
+-            }
+-            total += n;
+-            out.push_str(&format!(
+-                "  {:<12} {:>5}  ({} сообщ.)\n",
+-                source,
+-                n,
+-                messages.len()
+-            ));
+-        }
+-        out.push_str(&format!("  итого: {total}\n"));
+-    }
++    format_section(&mut out, Level::Critical, &critical, &format_messages_list);
++    format_section(&mut out, Level::Warning, &warning, &format_messages_list);
++    format_section(&mut out, Level::Info, &info, &format_messages_count);
+ 
+     let all: i64 = entries.iter().map(|entry| entry.count).sum();
+     let sources: BTreeSet<&str> = entries.iter().map(|entry| entry.source.as_str()).collect();
+@@ -106,6 +43,56 @@
+     out
+ }
+ 
++/// Форматирует сообщения как список, разделённый "; ".
++/// Собирает уникальные сообщения в порядке появления.
++fn format_messages_list(entries: &[&Entry]) -> String {
++    let mut messages: Vec<&str> = Vec::new();
++    for entry in entries {
++        if !messages.contains(&entry.message.as_str()) {
++            messages.push(&entry.message);
++        }
++    }
++    messages.join("; ")
++}
++
++/// Форматирует сообщения как количество уникальных.
++/// Для Info-секции: "(N сообщ.)".
++fn format_messages_count(entries: &[&Entry]) -> String {
++    let mut messages: BTreeSet<&str> = BTreeSet::new();
++    for entry in entries {
++        messages.insert(&entry.message);
++    }
++    format!("({} сообщ.)", messages.len())
++}
++
++/// Форматирует секцию отчёта для одного уровня.
++/// `format_msg` — функция, которая форматирует часть сообщения в строке источника.
++fn format_section<F>(
++    out: &mut String,
++    level: Level,
++    entries_by_source: &BTreeMap<&str, Vec<&Entry>>,
++    format_msg: &F,
++) where
++    F: Fn(&[&Entry]) -> String,
++{
++    if entries_by_source.is_empty() {
++        return;
++    }
++
++    out.push_str(&format!("\n[{}]\n", level));
++    let mut total = 0;
++    for (source, list) in entries_by_source {
++        let mut n = 0;
++        for entry in list {
++            n += entry.count;
++        }
++        total += n;
++        let msg = format_msg(list);
++        out.push_str(&format!("  {:<12} {:>5}  {}\n", source, n, msg));
++    }
++    out.push_str(&format!("  итого: {total}\n"));
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
